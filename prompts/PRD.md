@@ -9,6 +9,8 @@ Não cite tecnologias, frameworks, bibliotecas, linguagens, arquitetura técnica
 
 Cada requisito de negócio precisa ser **rastreável**: numere requisitos funcionais como `BR-XXX` (Business Requirement) e não-funcionais como `NFR-XXX`. Esses IDs são consumidos pelos artefatos seguintes (especificação, plano e tarefas) para garantir cobertura ponta-a-ponta. Nunca renumere IDs existentes ao editar; ao adicionar, use o próximo número livre.
 
+Quando o contexto incluir um documento produto com seções ou requisitos identificados, anote ao final de cada `BR-XXX` e `NFR-XXX` o identificador nativo de origem entre parênteses, exatamente como aparece no documento: `(RF01)`, `(§3.1.2)`, `(PREMISSAS)`. Se o documento não tiver identificadores, omita a anotação.
+
 Cada requisito deve ser **testável**: descreva o comportamento ou atributo de qualidade de modo que seja possível afirmar binariamente se foi atendido. Frases vagas como "boa performance" ou "fácil de usar" não são requisitos — converta-as em métricas ou comportamentos observáveis.
 
 Quando o contexto indicar que o produto nasce do zero, deixe claro que se trata de uma iniciativa fundacional e descreva as capacidades mínimas esperadas para viabilizar o produto. Quando o contexto indicar evolução de produto existente, foque no incremento de valor, impactos esperados e dependências funcionais.
@@ -40,8 +42,8 @@ Descreva o(s) usuário(s)-alvo deste épico (perfil, contexto, motivações).
 Descreva as principais jornadas e fluxos de trabalho habilitados por este épico.
 
 ## Requisitos do Negócio
-- **Requisitos Funcionais:** lista numerada no formato `BR-XXX: <descrição>` do que o épico deve entregar do ponto de vista de negócio. Cada item deve ser testável (resposta binária para "atende ou não atende").
-- **Requisitos Não-Funcionais:** lista numerada no formato `NFR-XXX: <descrição>` com restrições e atributos de qualidade (performance, segurança, acessibilidade, privacidade de dados, observabilidade, compliance). Sempre que possível, inclua métrica ou limiar concreto.
+- **Requisitos Funcionais:** lista numerada no formato `BR-XXX: <descrição>` do que o épico deve entregar do ponto de vista de negócio. Cada item deve ser testável (resposta binária para "atende ou não atende"). Quando aplicável, inclua o identificador nativo do documento de origem ao final: `BR-001: O SF deve exibir documentos obrigatórios com status e data de validade. (RF01)`.
+- **Requisitos Não-Funcionais:** lista numerada no formato `NFR-XXX: <descrição>` com restrições e atributos de qualidade (performance, segurança, acessibilidade, privacidade de dados, observabilidade, compliance). Sempre que possível, inclua métrica ou limiar concreto. Ex.: `NFR-001: O tempo de resposta não deve exceder 2s em p95. (§3.1.2)`.
 
 ## Métricas de Sucesso
 KPIs (Key Performance Indicators) para medir o sucesso do épico — específicos e mensuráveis. Quando possível, inclua baseline atual e meta. Cada métrica deve poder ser instrumentada.

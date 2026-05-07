@@ -11,7 +11,8 @@ Ao referenciar qualquer API, padrão, biblioteca, comportamento de framework ou 
 
 1. **Codebase fornecido** — verifique código, convenções e padrões já em uso no contexto.
 2. **Documentação do projeto** — README, docs/, comentários inline, artefatos prévios.
-3. **Documentação oficial** — apenas se o consumidor do prompt tiver acesso a Context7 MCP, busca web ou docs oficiais; não invente conteúdo de documentação.
+3. **Documento produto recebido** — quando o contexto incluir um documento produto (PDF, especificação funcional, requisição de serviço), cite o identificador nativo de origem ao justificar decisões técnicas, restrições ou suposições derivadas diretamente desse documento. Use o identificador exatamente como aparece no documento (`RF01`, `§3.1.2`, nome de seção). Use apenas quando a referência esclarecer o *porquê* de uma escolha.
+4. **Documentação oficial** — apenas se o consumidor do prompt tiver acesso a Context7 MCP, busca web ou docs oficiais; não invente conteúdo de documentação.
 4. **Sinalize como incerto** — quando não for possível verificar, marque explicitamente: `[INCERTO: <o que não foi possível confirmar>]`.
 
 **REGRA INVIOLÁVEL: NUNCA invente APIs, métodos, comportamentos, nomes de pacote, assinaturas, opções de configuração ou padrões.** Inventar propaga falhas em cascata para tarefas e implementação. Quando em dúvida, use linguagem stack-agnostic, declare suposição ou marque como incerto. Admitir lacuna é sempre preferível a fabricar.
@@ -64,7 +65,7 @@ Visão geral de como os componentes interagem e o fluxo de dados principal. Use 
 - **Interfaces:** principais funções/endpoints/contratos expostos. Para cada um, assinatura conceitual e descrição curta.
 - **Dependencies:** o que precisa para funcionar (outros componentes, serviços externos, dados).
 - **Reuses:** componentes/utilitários existentes que este componente consome (referencia entradas da seção ## Reuso de Código).
-- **Implements:** lista de IDs `FR-XXX` da Especificação que este componente atende. Use "None" se for cross-cutting.
+- **Implements:** lista de IDs `FR-XXX` da Especificação que este componente atende, com o identificador nativo do documento de origem quando disponível. Ex.: `FR-001 (RF01), FR-004 (§3.1.2)`. Use "None" se for cross-cutting.
 
 ## Modelo de Dados
 Mudanças de schema (novas tabelas, colunas modificadas, novos tipos, eventos, contratos de mensagem) ou "Sem alterações no modelo de dados" se não houver. Para cada mudança, inclua: nome, campos relevantes, relacionamentos e migração necessária. Se o stack de persistência não estiver determinado, descreva o modelo lógico (entidades e relações) sem amarrar a um SGBD específico.
@@ -100,7 +101,7 @@ caminho/do/arquivo.ext   # [novo|modificado] — <descrição> — implementa: F
 Não inclua arquivos sem justificativa direta em FR-XXX da Especificação. Se um arquivo é meramente estrutural (ex.: barrel `index.ts`), explicite isso.
 
 ## Suposições
-Lacunas técnicas no contexto preenchidas com inferências. Liste cada suposição com `S-XXX:` numerada e indique como validá-la. Se não houver suposições materiais, escreva "Nenhuma suposição — contexto suficiente".
+Lacunas técnicas no contexto preenchidas com inferências. Liste cada suposição com `S-XXX:` numerada e indique como validá-la. Quando a suposição for ancorada em trecho do documento recebido, cite o identificador nativo em vez de "inferido do contexto" — ex.: `S-001: Volumetria sync/async será batch (RF01 — nota de refinamento). Confirmar com arq. Raízen.` Se não houver suposições materiais, escreva "Nenhuma suposição — contexto suficiente".
 ```
 
 # AO EDITAR (INSTRUÇÕES DE REVISÃO)

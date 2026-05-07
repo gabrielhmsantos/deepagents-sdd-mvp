@@ -15,6 +15,8 @@ Cada P1 deve ser uma fatia vertical demonstrável independentemente — implemen
 
 **Rastreabilidade** é obrigatória. Quando houver um PRD com IDs `BR-XXX` (Business Requirements) e `NFR-XXX` (Non-Functional Requirements), cada `FR-XXX` (Functional Requirement) e cada user story devem mapear-se ao(s) BR/NFR que implementam. Sem PRD prévio, gere apenas FR-XXX/SC-XXX e marque a coluna de origem como "—".
 
+Quando o contexto incluir um documento produto com seções ou requisitos identificados, use o identificador nativo desse documento como âncora de origem de cada FR-XXX gerado. Anote ao final da descrição do FR o identificador entre parênteses, exatamente como aparece no documento: `(User Story N, RF01)` ou `(User Story N, §3.1.2)`. Se o documento não tiver identificadores, use `—`.
+
 Quando o contexto indicar um produto novo, inclua user stories e requisitos funcionais também para capacidades fundacionais visíveis ao usuário ou necessárias para a operação mínima do produto. Quando o contexto indicar uma feature em produto existente, foque nas mudanças incrementais, impactos em fluxos existentes e compatibilidade funcional.
 
 **Áreas cinzas (Gray Areas)**: ao detectar comportamento de usuário ambíguo no contexto recebido (múltiplas interpretações válidas para layout, tom de mensagem, fluxo de erro, granularidade de dado, etc.), NÃO escolha silenciosamente. Registre na seção `## Gray Areas` com 2-4 opções concretas e uma recomendação fundamentada. Esta seção é não-interativa: você documenta a ambiguidade, propõe opções e indica a opção que será assumida na ausência de decisão do usuário; outros artefatos posteriores tratarão a opção recomendada como a decisão vigente.
@@ -41,7 +43,12 @@ Uma ou mais user stories, cada uma como sub-seção titulada `### User Story N -
 - **Independent Test:** uma frase descrevendo como demonstrar/testar esta story isoladamente, sem depender de outras stories.
 
 ## Functional Requirements
-Lista enumerada de requisitos funcionais no formato `FR-XXX: <descrição>` descrevendo o que o sistema deve fazer. Cada FR-XXX deve indicar entre parênteses ao final qual user story o origina, ex.: `FR-001: O sistema deve validar email no formato RFC 5322. (User Story 1)`. Quando aplicável, indique também o BR-XXX do PRD: `FR-001: ... (User Story 1, BR-003)`.
+Lista enumerada de requisitos funcionais no formato `FR-XXX: <descrição>` descrevendo o que o sistema deve fazer. Cada FR-XXX deve indicar entre parênteses ao final qual user story o origina e, quando aplicável, o identificador nativo do documento de origem:
+```
+FR-001: O sistema deve validar email no formato RFC 5322. (User Story 1, BR-003)
+FR-002: O sistema deve exibir documentos obrigatórios com status e validade. (User Story 1, RF01)
+FR-003: O sistema deve calcular o valor líquido da guia. (User Story 2, §3.1.2)
+```
 
 ## Success Criteria
 Resultados mensuráveis no formato `SC-XXX: <descrição>` que definem quando a feature é considerada bem-sucedida. Cada SC-XXX deve ser instrumentável (passível de medição automática ou observação direta). Quando aplicável, referencie a métrica do PRD que sustenta este critério.
@@ -63,14 +70,16 @@ Ambiguidades detectadas no contexto que admitem múltiplas interpretações vál
 Se nenhuma ambiguidade material foi detectada, escreva "Sem áreas cinzas — comportamento totalmente determinado pelo contexto".
 
 ## Traceability
-Tabela mapeando FR-XXX/SC-XXX → User Story → PRD origin. Use o formato:
+Tabela mapeando FR-XXX/SC-XXX → User Story → origem no documento. Use o formato:
 
-| ID | Origem (User Story) | PRD origin | Status |
-|----|---------------------|------------|--------|
+| ID | Origem (User Story) | Origem | Status |
+|----|---------------------|--------|--------|
 | FR-001 | User Story 1 | BR-003 | Pending |
-| SC-001 | User Story 1 | Métrica X do PRD | Pending |
+| FR-002 | User Story 1 | RF01 | Pending |
+| FR-003 | User Story 2 | §3.1.2 | Pending |
+| SC-001 | User Story 1 | — | Pending |
 
-Status inicial sempre "Pending". Se não houver PRD prévio, preencha "PRD origin" com "—".
+Status inicial sempre "Pending". A coluna "Origem" aceita qualquer identificador nativo do documento recebido (`BR-XXX`, `RF01`, `§3.1.2`, nome de seção) ou `—` quando não houver documento de origem identificável.
 
 ## Assumptions
 Suposições, dependências e restrições explícitas tomadas como dadas ao escrever esta especificação. Liste cada suposição com `S-XXX:` numerada (S-001, S-002…) e indique o que precisa ser validado. Se não houver suposições materiais, escreva "Nenhuma suposição — contexto suficiente".
