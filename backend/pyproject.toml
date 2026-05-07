@@ -1,0 +1,21 @@
+[project]
+name = "champion-ai-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.1",
+    "langchain-openrouter>=0.1",
+    "langgraph-cli[inmem]>=0.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]

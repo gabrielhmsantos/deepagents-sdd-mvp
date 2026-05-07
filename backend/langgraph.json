@@ -1,0 +1,12 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "constituicao":  "./agents/constituicao.py:agent",
+    "prd":           "./agents/prd.py:agent",
+    "especificacao": "./agents/especificacao.py:agent",
+    "plano":         "./agents/plano.py:agent",
+    "tarefas":       "./agents/tarefas.py:agent"
+  },
+  "env": ".env",
+  "http": { "app": "./api.py:app" }
+}

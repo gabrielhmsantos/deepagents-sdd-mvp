@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.egg-info/
+dist/
+.langgraph_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Gerado (artefatos SDD — decida se quer versionar ou não)
+.specs/
+
+# Editor
+.DS_Store
+*.swp
