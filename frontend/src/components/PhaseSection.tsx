@@ -28,8 +28,9 @@ interface StreamProps {
 }
 
 function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
-  const { content, isLoading, submit } = useArtifactAgent(phase);
+  const { isLoading, submit } = useArtifactAgent(phase);
   const submitted = useRef(false);
+  const hasStarted = useRef(false);  // true assim que isLoading virar true pela 1ª vez
   const [preview, setPreview] = useState("");
   const [done, setDone] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
@@ -41,20 +42,17 @@ function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Espelha content → preview (preview em tempo real enquanto o agente gera)
+  // Fim do stream: só lê o draft após o stream ter de fato iniciado e terminado
   useEffect(() => {
-    if (!content) return;
-    setPreview(content);
-  }, [content]);
-
-  // Fim do stream: lê o arquivo que o agente salvou como fonte autoritativa
-  useEffect(() => {
-    if (!isLoading && !done && (preview || content !== undefined)) {
-      setDone(true);
-      readDraft(slug, phase.toUpperCase())
-        .then((saved) => { if (saved) setPreview(saved); })
-        .catch(() => {}); // fallback: mantém o conteúdo do stream
+    if (isLoading) {
+      hasStarted.current = true;
+      return;
     }
+    if (!hasStarted.current || done) return;
+    setDone(true);
+    readDraft(slug, phase.toUpperCase())
+      .then((saved) => { if (saved) setPreview(saved); })
+      .catch(() => {});
   }, [isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleApprove = useCallback(async () => {
@@ -71,16 +69,16 @@ function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
     setShowEdit(false);
     setDone(false);
     setPreview("");
-    submit({ messages: [{ role: "user", content: buildEditInput(phase, cur, instructions) }] });
-  }, [phase, preview, submit]);
+    submit({ messages: [{ role: "user", content: buildEditInput(phase, slug, cur, instructions) }] });
+  }, [phase, slug, preview, submit]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
         <span style={{ color: "#64748b", fontSize: "0.78rem", flex: 1 }}>
-          {isLoading && "⏳ Gerando…"}
+          {isLoading && "⏳ Gerando artefato, aguarde…"}
           {!isLoading && done && "✅ Pronto para revisão"}
-          {!isLoading && !done && !preview && "Aguardando resposta…"}
+          {!isLoading && !done && "Aguardando resposta…"}
         </span>
         {done && (
           <>
@@ -94,13 +92,13 @@ function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
         )}
       </div>
 
-      {preview ? (
-        <MarkdownPreview content={preview} />
-      ) : (
+      {isLoading ? (
         <div style={{ padding: "3rem 0", textAlign: "center", color: "#334155", fontSize: "0.85rem" }}>
-          {isLoading ? "Aguardando primeiros tokens…" : ""}
+          Aguardando o agente concluir…
         </div>
-      )}
+      ) : preview ? (
+        <MarkdownPreview content={preview} />
+      ) : null}
 
       {showEdit && (
         <EditModeDialog onConfirm={handleEdit} onCancel={() => setShowEdit(false)} />
@@ -156,7 +154,7 @@ export function PhaseSection({
     }
 
     if (currentContent && editInstructions) {
-      return buildEditInput(phase, currentContent, editInstructions);
+      return buildEditInput(phase, slug, currentContent, editInstructions);
     }
     return buildInitialInput(phase, { slug, description, previous, uploads: selectedUploads });
   }, [slug, description, files, previousPhases, phase]);
@@ -165,8 +163,11 @@ export function PhaseSection({
     if (!slug) return;
     setBuilding(true);
     try {
-      // Apaga draft anterior para que o agente possa criar com write_file (que falha se já existe)
-      await deleteDraft(slug, phase.toUpperCase()).catch(() => {});
+      const isEdit = !!(fromContent && editInstructions);
+      if (!isEdit) {
+        // Apaga draft apenas para geração inicial (write_file falha se arquivo já existe)
+        await deleteDraft(slug, phase.toUpperCase()).catch(() => {});
+      }
       const input = await buildInput(fromContent, editInstructions);
       setPendingInput(input);
       setStreamKey((k) => k + 1);

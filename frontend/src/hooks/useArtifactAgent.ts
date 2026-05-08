@@ -4,12 +4,11 @@ import type { Phase } from "../lib/types";
 const API = "/api";
 
 interface AgentState {
-  content: string;
   isLoading: boolean;
 }
 
 export function useArtifactAgent(phase: Phase) {
-  const [state, setState] = useState<AgentState>({ content: "", isLoading: false });
+  const [state, setState] = useState<AgentState>({ isLoading: false });
   const abortRef = useRef<AbortController | null>(null);
 
   const submit = useCallback(
@@ -18,7 +17,7 @@ export function useArtifactAgent(phase: Phase) {
       const abort = new AbortController();
       abortRef.current = abort;
 
-      setState({ content: "", isLoading: true });
+      setState({ isLoading: true });
 
       try {
         // Create a fresh thread for each generation
@@ -62,11 +61,7 @@ export function useArtifactAgent(phase: Phase) {
             } else if (line.startsWith("data: ")) {
               if (eventType === "messages/partial") {
                 try {
-                  const msgs = JSON.parse(line.slice(6)) as Array<{ type: string; content: string }>;
-                  const ai = msgs.find((m) => m.type === "ai");
-                  if (ai && ai.content) {
-                    setState((s) => ({ ...s, content: ai.content }));
-                  }
+                  // content ignorado — fonte autoritativa é o arquivo salvo no disco
                 } catch {
                   // ignore malformed event
                 }
@@ -85,5 +80,5 @@ export function useArtifactAgent(phase: Phase) {
     [phase]
   );
 
-  return { content: state.content, isLoading: state.isLoading, submit };
+  return { isLoading: state.isLoading, submit };
 }

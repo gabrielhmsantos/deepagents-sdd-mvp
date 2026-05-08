@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listArtifacts } from "./lib/api";
 import { PHASES, PHASE_LABELS } from "./lib/types";
 import type { Phase, UploadedFile } from "./lib/types";
@@ -30,21 +30,41 @@ function useLocalStorage<T>(key: string, initial: T): [T, (v: T | ((p: T) => T))
   return [value, set];
 }
 
+// ── Debounce: retorna valor estabilizado após delay ──────────────────────────
+function useDebounced<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setDebounced(value), delay);
+    return () => { if (timer.current) clearTimeout(timer.current); };
+  }, [value, delay]);
+  return debounced;
+}
+
 // ── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [slug, setSlugRaw] = useLocalStorage("champion-slug", "");
-  const [description, setDescription] = useLocalStorage("champion-description", "");
+  // Estados de input: atualizam imediatamente (digitação fluída)
+  const [slugInput, setSlugInput] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("champion-slug") ?? '""') as string; } catch { return ""; }
+  });
+  const [descriptionInput, setDescriptionInput] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("champion-description") ?? '""') as string; } catch { return ""; }
+  });
   const [files, setFiles] = useLocalStorage<UploadedFile[]>("champion-files", []);
 
+  // Estados debouncados: propagados aos filhos e persistidos no localStorage
+  const slug = useDebounced(slugInput.toLowerCase().replace(/\s+/g, "-"), 300);
+  const description = useDebounced(descriptionInput, 400);
+
+  // Persiste no localStorage apenas quando o valor debouncado muda
+  useEffect(() => { try { localStorage.setItem("champion-slug", JSON.stringify(slug)); } catch {} }, [slug]);
+  useEffect(() => { try { localStorage.setItem("champion-description", JSON.stringify(description)); } catch {} }, [description]);
+
   const [approvedPhases, setApprovedPhases] = useState<Set<Phase>>(new Set());
-  const [phasesDirty, setPhasesDirty] = useState(0); // incrementar força recarga
+  const [phasesDirty, setPhasesDirty] = useState(0);
 
-  const setSlug = useCallback(
-    (raw: string) => setSlugRaw(raw.toLowerCase().replace(/\s+/g, "-")),
-    [setSlugRaw]
-  );
-
-  // Sincroniza fases aprovadas do backend sempre que slug muda ou aprovação ocorre
+  // Sincroniza fases aprovadas — só dispara quando slug debouncado muda
   useEffect(() => {
     if (!slug || slug.length < 3) {
       setApprovedPhases(new Set());
@@ -57,9 +77,7 @@ export default function App() {
       .catch(() => setApprovedPhases(new Set()));
   }, [slug, phasesDirty]);
 
-  const handleApproved = useCallback(() => {
-    setPhasesDirty((n) => n + 1);
-  }, []);
+  const handleApproved = useCallback(() => setPhasesDirty((n) => n + 1), []);
 
   const activePhase = PHASES.find((p) => !approvedPhases.has(p));
   const allDone = approvedPhases.size === PHASES.length;
@@ -106,8 +124,8 @@ export default function App() {
             <div style={{ flex: "0 0 220px" }}>
               <label style={labelStyle}>Slug do épico</label>
               <input
-                value={slug}
-                onChange={(e) => setSlug(e.target.value)}
+                value={slugInput}
+                onChange={(e) => setSlugInput(e.target.value)}
                 placeholder="ex: seconci-app"
                 style={inputStyle}
               />
@@ -115,8 +133,8 @@ export default function App() {
             <div style={{ flex: 1, minWidth: "200px" }}>
               <label style={labelStyle}>Descrição / contexto</label>
               <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                value={descriptionInput}
+                onChange={(e) => setDescriptionInput(e.target.value)}
                 rows={3}
                 placeholder="Descreva o produto, épico ou feature a ser documentado…"
                 style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
