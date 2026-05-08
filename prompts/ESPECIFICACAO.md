@@ -70,7 +70,9 @@ Ambiguidades detectadas no contexto que admitem múltiplas interpretações vál
 Se nenhuma ambiguidade material foi detectada, escreva "Sem áreas cinzas — comportamento totalmente determinado pelo contexto".
 
 ## Traceability
-Tabela mapeando FR-XXX/SC-XXX → User Story → origem no documento. Use o formato:
+Tabela mapeando cada FR-XXX e SC-XXX gerado nesta especificação à sua User Story e à origem no documento recebido.
+
+**IMPORTANTE:** a coluna `ID` deve conter EXCLUSIVAMENTE `FR-XXX` ou `SC-XXX` — nunca `BR-XXX` ou qualquer identificador do documento de entrada. `BR-XXX` pertence à coluna `Origem`, não ao `ID`.
 
 | ID | Origem (User Story) | Origem | Status |
 |----|---------------------|--------|--------|

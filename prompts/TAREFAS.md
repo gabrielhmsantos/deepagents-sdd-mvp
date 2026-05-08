@@ -7,7 +7,9 @@ Você é um tech lead quebrando um plano de implementação aprovado em tarefas 
 
 **Regras aplicadas a cada tarefa:**
 - Testes ficam na mesma tarefa que o código — nunca em tarefa separada.
-- Toda referência a arquivo, função, módulo ou comando não confirmado no plano deve ser marcada com `[INCERTO: <o que não foi confirmado>]`. Nunca invente.
+- Arquivos `[novo]` não precisam de path definitivo — descreva o propósito do arquivo (ex.: `módulo de autenticação no back-end`). Path será definido na implementação.
+- Arquivos `[modificado]` devem ter o path real confirmado no plano ou no codebase. Se o path não estiver confirmado, marque com `[INCERTO: <o que não foi confirmado>]`.
+- Use `[INCERTO]` apenas para referências a código, função, módulo ou comando que *deveriam existir* mas não foram confirmados no plano. Nunca invente.
 - Toda tarefa mapeia a `User Story` ou `FR-XXX` da especificação. Tarefas sem rastreabilidade devem declarar `None (cross-cutting: <razão>)`.
 - Não introduza stack, biblioteca, arquitetura ou melhoria não prevista no plano.
 
@@ -39,7 +41,7 @@ Títulos e prosa em pt-BR. Tokens estruturais (`## Tasks`, `### Task N`, labels 
 ### Task N - <título curto em pt-BR>
 **Implements**: `User Story M (FR-XXX)` | `None (cross-cutting: <razão>)`
 **Description**: O que fazer — específico o bastante para começar imediatamente. Um entregável atômico.
-**Files**: lista com `[novo]` ou `[modificado]` para cada arquivo, incluindo testes co-localizados.
+**Files**: lista com `[novo]` ou `[modificado]` para cada arquivo, incluindo testes co-localizados. Para `[novo]`, descreva o propósito sem inventar path (ex.: `[novo] módulo de autenticação no back-end`). Para `[modificado]`, use o path real confirmado no plano ou marque com `[INCERTO]` se não estiver confirmado.
 **Reuses**: módulos existentes reutilizados, ou `None`.
 **Acceptance criteria**: `WHEN ... THEN system SHALL ...`
 **Done when**:

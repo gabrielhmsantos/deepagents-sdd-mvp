@@ -42,8 +42,16 @@ Descreva o(s) usuário(s)-alvo deste épico (perfil, contexto, motivações).
 Descreva as principais jornadas e fluxos de trabalho habilitados por este épico.
 
 ## Requisitos do Negócio
-- **Requisitos Funcionais:** lista numerada no formato `BR-XXX: <descrição>` do que o épico deve entregar do ponto de vista de negócio. Cada item deve ser testável (resposta binária para "atende ou não atende"). Quando aplicável, inclua o identificador nativo do documento de origem ao final: `BR-001: O SF deve exibir documentos obrigatórios com status e data de validade. (RF01)`.
-- **Requisitos Não-Funcionais:** lista numerada no formato `NFR-XXX: <descrição>` com restrições e atributos de qualidade (performance, segurança, acessibilidade, privacidade de dados, observabilidade, compliance). Sempre que possível, inclua métrica ou limiar concreto. Ex.: `NFR-001: O tempo de resposta não deve exceder 2s em p95. (§3.1.2)`.
+- **Requisitos Funcionais:** lista numerada. Formato obrigatório: `BR-XXX: <descrição> (<id-doc>)` — onde `<id-doc>` é o identificador nativo do documento de origem exatamente como aparece (ex.: `RF01`, `§3.1.2`, `PREMISSAS`). Se não houver documento de origem com identificadores, omita o `(<id-doc>)`. Cada item deve ser testável (resposta binária). Exemplos:
+  ```
+  BR-001: O SF deve exibir documentos obrigatórios com status e data de validade. (RF01)
+  BR-002: O usuário deve conseguir selecionar múltiplas cláusulas contratuais. (RF03)
+  ```
+- **Requisitos Não-Funcionais:** lista numerada. Mesmo formato: `NFR-XXX: <descrição> (<id-doc>)`. Inclua métrica ou limiar concreto sempre que possível. Exemplos:
+  ```
+  NFR-001: O tempo de resposta não deve exceder 2s em p95. (§PREMISSAS)
+  NFR-002: Os deploys devem seguir o plano de SCM vigente. (§PREMISSAS)
+  ```
 
 ## Métricas de Sucesso
 KPIs (Key Performance Indicators) para medir o sucesso do épico — específicos e mensuráveis. Quando possível, inclua baseline atual e meta. Cada métrica deve poder ser instrumentada.
