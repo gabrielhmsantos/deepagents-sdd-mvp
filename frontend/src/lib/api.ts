@@ -21,10 +21,10 @@ export async function writeDraft(slug: string, phase: string, content: string) {
 }
 
 export async function readDraft(slug: string, phase: string): Promise<string | null> {
-  const res = await fetch(`${BASE}/drafts/${slug}/${phase}`);
-  if (res.status === 404) return null;
-  const data = await json<{ content: string }>(res);
-  return data.content;
+  const data = await json<{ exists: boolean; content: string | null }>(
+    await fetch(`${BASE}/drafts/${slug}/${phase}`)
+  );
+  return data.exists ? data.content : null;
 }
 
 export async function deleteDraft(slug: string, phase: string): Promise<void> {
@@ -65,6 +65,10 @@ export async function readArtifact(slug: string, phase: string): Promise<string 
   return data.content;
 }
 
+export function zipUrl(slug: string): string {
+  return `${BASE}/artifacts/${encodeURIComponent(slug)}/zip`;
+}
+
 // ── Uploads ───────────────────────────────────────────────────────────────────
 
 export interface UploadResult {
@@ -97,5 +101,21 @@ export async function readExtracted(
 export async function deleteUpload(slug: string, filename: string) {
   return json(
     await fetch(`${BASE}/uploads/${slug}/${filename}`, { method: "DELETE" })
+  );
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+export async function getGithubPat(): Promise<{ configured: boolean; masked: string | null }> {
+  return json(await fetch(`${BASE}/settings/github-pat`));
+}
+
+export async function saveGithubPat(pat: string): Promise<void> {
+  await json(
+    await fetch(`${BASE}/settings/github-pat`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pat }),
+    })
   );
 }

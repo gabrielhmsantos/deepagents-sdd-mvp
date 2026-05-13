@@ -1,25 +1,22 @@
 import type { Phase } from "./types";
 
+// Artefatos prévios aprovados são injetados pelo backend (_factory.py) via
+// system prompt. O frontend só envia o que é input do usuário: descrição,
+// uploads e instrução de salvamento.
 export function buildInitialInput(
   phase: Phase,
   params: {
     slug: string;
     description: string;
-    previous?: Partial<Record<Phase, string>>;
     uploads?: { filename: string; content: string }[];
   }
 ): string {
   const blocks: string[] = [];
 
-  // Instrui o agente a salvar o artefato diretamente no filesystem
   blocks.push(`[SALVAR EM]\ndrafts/${params.slug}/${phase.toUpperCase()}.md`);
 
   for (const u of params.uploads ?? []) {
     blocks.push(`[DOCUMENTO BASE: ${u.filename}]\n${u.content}`);
-  }
-
-  for (const [k, v] of Object.entries(params.previous ?? {})) {
-    if (v) blocks.push(`[${k.toUpperCase()} APROVADA]\n${v}`);
   }
 
   blocks.push(

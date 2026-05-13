@@ -58,10 +58,12 @@ def list_uploads(slug: str):
     folder = UPLOADS / slug
     if not folder.exists():
         return {"slug": slug, "files": []}
+    all_names = {p.name for p in folder.iterdir() if p.is_file()}
     files = [
-        p.name
-        for p in folder.iterdir()
-        if p.is_file() and not p.name.endswith(".txt")
+        name
+        for name in all_names
+        # Esconde apenas o texto extraído (sufixo ".txt" cujo "original" também está na pasta).
+        if not (name.endswith(".txt") and name[:-4] in all_names)
     ]
     return {"slug": slug, "files": sorted(files)}
 

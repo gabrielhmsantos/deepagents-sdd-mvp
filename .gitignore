@@ -6,6 +6,9 @@ __pycache__/
 *.egg-info/
 dist/
 .langgraph_cache/
+.langgraph_api/
+backend/_debug_server_*.log
+backend/db.sqlite
 
 # Node
 node_modules/

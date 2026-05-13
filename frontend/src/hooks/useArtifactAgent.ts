@@ -1,36 +1,95 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Phase } from "../lib/types";
 
 const API = "/api";
+// Stream sem nenhum evento (data: ...) por mais tempo que isso = considera travado.
+// Não é deadline absoluto da geração, é deadline de SILÊNCIO do servidor.
+const STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface AgentState {
   isLoading: boolean;
+  isError: boolean;
+  errorMessage: string;
+  wasCanceled: boolean;
 }
 
-export function useArtifactAgent(phase: Phase) {
-  const [state, setState] = useState<AgentState>({ isLoading: false });
+// Outcome explícito de cada submit. Permite distinguir "stream fechou
+// naturalmente" (consumidor deve ler o draft) de "fetch abortado por
+// StrictMode / Cancel / unmount" (consumidor deve ignorar).
+export type SubmitResult = "completed" | "aborted" | "error";
+
+// Best-effort fire-and-forget: pede ao langgraph dev pra encerrar o run.
+// Sem isso, abort no front só fecha o SSE, mas o worker do backend continua
+// rodando o agente até o fim (run zombie).
+function cancelBackendRun(threadId: string | null) {
+  if (!threadId) return;
+  fetch(`${API}/threads/${threadId}/cancel`, { method: "POST" }).catch(() => {});
+}
+
+export function useArtifactAgent(phase: Phase, slug: string) {
+  const [state, setState] = useState<AgentState>({
+    isLoading: false, isError: false, errorMessage: "", wasCanceled: false,
+  });
   const abortRef = useRef<AbortController | null>(null);
+  // True quando o usuário clicou Cancelar. Usado no catch pra distinguir
+  // abort intencional (mostra feedback + cancela no backend) de abort por
+  // cleanup do StrictMode em dev (não toca em state).
+  const userCanceledRef = useRef(false);
+
+  // Aborta qualquer run em andamento ao desmontar.
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const cancel = useCallback(() => {
+    userCanceledRef.current = true;
+    abortRef.current?.abort();
+  }, []);
 
   const submit = useCallback(
-    async (input: { messages: Array<{ role: string; content: string }> }) => {
+    async (input: { messages: Array<{ role: string; content: string }> }): Promise<SubmitResult> => {
       abortRef.current?.abort();
       const abort = new AbortController();
       abortRef.current = abort;
+      userCanceledRef.current = false;
 
-      setState({ isLoading: true });
+      setState({ isLoading: true, isError: false, errorMessage: "", wasCanceled: false });
+
+      // Watchdog: aborta se o stream ficar silencioso por muito tempo.
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleTripped = false;
+      const armWatchdog = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          idleTripped = true;
+          abort.abort();
+        }, STREAM_IDLE_TIMEOUT_MS);
+      };
+
+      let result: SubmitResult = "error";
+      let wasCleanupAbort = false;
+      // Promovido pro escopo do submit pra ficar acessível no catch (cancel
+      // no backend precisa do thread_id mesmo se o stream nunca abrir).
+      let threadId: string | null = null;
 
       try {
-        // Create a fresh thread for each generation
         const threadResp = await fetch(`${API}/threads`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
           signal: abort.signal,
         });
-        const threadData = await threadResp.json() as { thread_id: string };
-        const threadId = threadData.thread_id;
+        if (!threadResp.ok) {
+          throw new Error(
+            `Falha ao criar thread (${threadResp.status}). ` +
+              "Verifique se o backend foi iniciado com `langgraph dev --port 8000` " +
+              "(não `uvicorn api:app`) — as rotas /threads vêm do LangGraph CLI."
+          );
+        }
+        const threadData = await threadResp.json() as { thread_id?: string };
+        threadId = threadData.thread_id ?? null;
+        if (!threadId) {
+          throw new Error("Resposta de /threads sem thread_id.");
+        }
 
-        // Stream the run via SSE
         const resp = await fetch(`${API}/threads/${threadId}/runs/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
@@ -38,6 +97,7 @@ export function useArtifactAgent(phase: Phase) {
             assistant_id: phase,
             input: { messages: input.messages },
             stream_mode: ["messages"],
+            config: { configurable: { slug } },
           }),
           signal: abort.signal,
         });
@@ -46,10 +106,17 @@ export function useArtifactAgent(phase: Phase) {
         const decoder = new TextDecoder();
         let buffer = "";
         let eventType = "";
+        armWatchdog();
 
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            // Stream encerrou naturalmente (server fechou o SSE).
+            console.log("[SSE] stream closed naturally");
+            result = "completed";
+            break;
+          }
+          armWatchdog();
           buffer += decoder.decode(value, { stream: true });
 
           const lines = buffer.split("\n");
@@ -58,12 +125,15 @@ export function useArtifactAgent(phase: Phase) {
           for (const line of lines) {
             if (line.startsWith("event: ")) {
               eventType = line.slice(7).trim();
+              console.log("[SSE event]", eventType);
             } else if (line.startsWith("data: ")) {
-              if (eventType === "messages/partial") {
+              console.log("[SSE data]", eventType, line.slice(6, 240));
+              if (eventType === "error") {
                 try {
-                  // content ignorado — fonte autoritativa é o arquivo salvo no disco
+                  const msg = (JSON.parse(line.slice(6)) as { message?: string })?.message ?? "Erro no agente.";
+                  setState((s) => ({ ...s, isError: true, errorMessage: msg }));
                 } catch {
-                  // ignore malformed event
+                  setState((s) => ({ ...s, isError: true, errorMessage: "Erro no agente." }));
                 }
               }
             } else if (line === "") {
@@ -72,13 +142,55 @@ export function useArtifactAgent(phase: Phase) {
           }
         }
       } catch (e: unknown) {
-        if ((e as Error).name !== "AbortError") console.error("Stream error:", e);
+        const err = e as Error;
+        if (err.name === "AbortError") {
+          if (idleTripped) {
+            // Watchdog: 5 min sem evento → mata o backend run e mostra erro.
+            cancelBackendRun(threadId);
+            setState((s) => ({
+              ...s,
+              isError: true,
+              errorMessage:
+                `Stream silencioso por mais de ${Math.round(STREAM_IDLE_TIMEOUT_MS / 60000)} min — ` +
+                "o backend pode estar travado (provável tool call sem resposta). " +
+                "Veja o log do servidor para a última chamada antes do silêncio.",
+            }));
+            result = "error";
+          } else if (userCanceledRef.current) {
+            // Cancelamento explícito do usuário: mata o backend run e flagga UI.
+            cancelBackendRun(threadId);
+            setState((s) => ({ ...s, wasCanceled: true }));
+            result = "aborted";
+          } else {
+            // StrictMode cleanup ou unmount real. NÃO tocar em state nem cancelar
+            // o backend: a 2ª passada do submit em dev usa uma thread NOVA, e
+            // mexer em state aqui faria isLoading virar false durante o ciclo
+            // mount→cleanup→remount, escondendo o status "⏳ Gerando".
+            wasCleanupAbort = true;
+            result = "aborted";
+          }
+        } else {
+          setState((s) => ({ ...s, isError: true, errorMessage: String(e) }));
+          result = "error";
+        }
       } finally {
-        setState((s) => ({ ...s, isLoading: false }));
+        if (idleTimer) clearTimeout(idleTimer);
+        if (!wasCleanupAbort) {
+          setState((s) => ({ ...s, isLoading: false }));
+        }
       }
+
+      return result;
     },
-    [phase]
+    [phase, slug]
   );
 
-  return { isLoading: state.isLoading, submit };
+  return {
+    isLoading: state.isLoading,
+    isError: state.isError,
+    errorMessage: state.errorMessage,
+    wasCanceled: state.wasCanceled,
+    submit,
+    cancel,
+  };
 }

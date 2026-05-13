@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\power\\\\Desktop\\\\deepagents-sdd-mvp\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(Format-Table -AutoSize)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\power\\\\Desktop\\\\deepagents-sdd-mvp\\\\backend\" -Recurse -Depth 2 -Force | Where-Object { $_.Name -match '\\\\.\\(py|yml|yaml|toml|json\\)$' } | Select-Object FullName)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\power\\\\Desktop\\\\deepagents-sdd-mvp\\\\frontend\" -Recurse -Depth 2 -Force | Where-Object { $_.Name -match '\\\\.\\(ts|tsx|json\\)$' } | Select-Object FullName)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\power\\\\.conda\\\\envs\\\\deep\\\\Lib\\\\site-packages\\\\deepagents\" -Recurse -Name)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\power\\\\Desktop\\\\deepagents-sdd-mvp\" -Recurse -Force | Where-Object { $_.FullName -match \"\\\\.langgraph_api\" } | Select-Object -First 20)",
+      "PowerShell(python -c \"import daytona_sdk; print\\(daytona_sdk.__file__\\)\")",
+      "PowerShell(head *)",
+      "PowerShell(ls *)",
+      "PowerShell(cd \"C:\\\\Users\\\\power\\\\Desktop\\\\deepagents-sdd-mvp\\\\frontend\"; npx tsc --noEmit; echo \"Exit: $LASTEXITCODE\")",
+      "PowerShell(uvicorn *)",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(netstat *)"
+    ]
+  }
+}
