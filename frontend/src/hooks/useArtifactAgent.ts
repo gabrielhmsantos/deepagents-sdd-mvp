@@ -21,9 +21,14 @@ export type SubmitResult = "completed" | "aborted" | "error";
 // Best-effort fire-and-forget: pede ao langgraph dev pra encerrar o run.
 // Sem isso, abort no front só fecha o SSE, mas o worker do backend continua
 // rodando o agente até o fim (run zombie).
-function cancelBackendRun(threadId: string | null) {
-  if (!threadId) return;
-  fetch(`${API}/threads/${threadId}/cancel`, { method: "POST" }).catch(() => {});
+//
+// Endpoint correto: POST /threads/{thread_id}/runs/{run_id}/cancel — confirmado
+// em .venv/.../langgraph_api/api/runs.py:985. Versão anterior usava
+// /threads/{thread_id}/cancel que devolve 404 (rota não existe).
+function cancelBackendRun(threadId: string | null, runId: string | null) {
+  if (!threadId || !runId) return;
+  fetch(`${API}/threads/${threadId}/runs/${runId}/cancel`, { method: "POST" })
+    .catch(() => {});
 }
 
 export function useArtifactAgent(phase: Phase, slug: string) {
@@ -66,9 +71,11 @@ export function useArtifactAgent(phase: Phase, slug: string) {
 
       let result: SubmitResult = "error";
       let wasCleanupAbort = false;
-      // Promovido pro escopo do submit pra ficar acessível no catch (cancel
-      // no backend precisa do thread_id mesmo se o stream nunca abrir).
+      // Promovidos pro escopo do submit pra ficar acessíveis no catch.
+      // threadId vem do POST /threads; runId vem do primeiro event:metadata
+      // do SSE. Ambos são obrigatórios pro endpoint de cancel.
       let threadId: string | null = null;
+      let runId: string | null = null;
 
       try {
         const threadResp = await fetch(`${API}/threads`, {
@@ -128,7 +135,14 @@ export function useArtifactAgent(phase: Phase, slug: string) {
               console.log("[SSE event]", eventType);
             } else if (line.startsWith("data: ")) {
               console.log("[SSE data]", eventType, line.slice(6, 240));
-              if (eventType === "error") {
+              if (eventType === "metadata" && !runId) {
+                // langgraph dev emite metadata como primeiro evento, com run_id.
+                // Captura uma vez (early return via && !runId) pra alimentar o cancel.
+                try {
+                  const meta = JSON.parse(line.slice(6)) as { run_id?: string };
+                  if (meta.run_id) runId = meta.run_id;
+                } catch { /* ignore */ }
+              } else if (eventType === "error") {
                 try {
                   const msg = (JSON.parse(line.slice(6)) as { message?: string })?.message ?? "Erro no agente.";
                   setState((s) => ({ ...s, isError: true, errorMessage: msg }));
@@ -146,7 +160,7 @@ export function useArtifactAgent(phase: Phase, slug: string) {
         if (err.name === "AbortError") {
           if (idleTripped) {
             // Watchdog: 5 min sem evento → mata o backend run e mostra erro.
-            cancelBackendRun(threadId);
+            cancelBackendRun(threadId, runId);
             setState((s) => ({
               ...s,
               isError: true,
@@ -158,7 +172,7 @@ export function useArtifactAgent(phase: Phase, slug: string) {
             result = "error";
           } else if (userCanceledRef.current) {
             // Cancelamento explícito do usuário: mata o backend run e flagga UI.
-            cancelBackendRun(threadId);
+            cancelBackendRun(threadId, runId);
             setState((s) => ({ ...s, wasCanceled: true }));
             result = "aborted";
           } else {

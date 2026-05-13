@@ -17,11 +17,38 @@ from deepagents.backends.sandbox import BaseSandbox
 
 load_dotenv(Path(__file__).parent / ".env")
 
+# Monkey-patch pra silenciar o flush loop do langgraph_runtime_inmem.
+# Por padrão ele persiste estado in-memory pra disco a cada 10s, o que gera o
+# "13 changes detected" do watchfiles. langgraph_api/cli.py:269 hard-codeia
+# LANGGRAPH_DISABLE_FILE_PERSISTENCE=false em patch_environment e ignora
+# explicitamente nosso .env (api/cli.py:276-282), então a única forma de
+# desligar sem reescrever o launcher é monkey-patchear depois que o módulo
+# já carregou. Daytona.py é importado por api.py durante app startup, que
+# acontece DEPOIS do flush loop começar — mata retroativamente.
+try:
+    import langgraph_runtime_inmem._persistence as _persistence_mod  # type: ignore
+    if not _persistence_mod.DISABLE_FILE_PERSISTENCE:
+        _persistence_mod.DISABLE_FILE_PERSISTENCE = True
+        _persistence_mod.stop_flush_loop()
+        logging.getLogger(__name__).info(
+            "langgraph_runtime_inmem flush loop desligado (monkey-patch). "
+            "Tradeoff: threads/runs in-memory são perdidos ao reiniciar langgraph dev."
+        )
+except Exception as _exc:
+    logging.getLogger(__name__).debug(
+        "Não foi possível desligar flush loop do langgraph_runtime_inmem: %s", _exc,
+    )
+
 DAYTONA_API_KEY = os.environ.get("DAYTONA_API_KEY", "")
 DAYTONA_SERVER_URL = os.environ.get("DAYTONA_SERVER_URL", "")
 # Default upper bound for sandbox.process.exec — sem isso, uma chamada presa
 # na API do Daytona trava o worker para sempre. Override via env.
-DAYTONA_EXEC_TIMEOUT_SECS = int(os.environ.get("DAYTONA_EXEC_TIMEOUT_SECS", "60"))
+DAYTONA_EXEC_TIMEOUT_SECS = int(os.environ.get("DAYTONA_EXEC_TIMEOUT_SECS", "30"))
+# Path absoluto dentro do sandbox onde o repositório é clonado. Fonte única de
+# verdade — usada no `git clone`, injetada no system prompt do agente via
+# _factory._codebase_block, e devolvida pelo /sandboxes/{slug} pro frontend.
+# Override via env (raramente necessário, default cobre a imagem padrão do Daytona).
+DAYTONA_REPO_PATH = os.environ.get("DAYTONA_REPO_PATH", "/home/daytona/repo")
 
 # Estados em que o sandbox pode ser usado diretamente
 _RUNNING_STATES = {"started", "starting", "restoring"}
@@ -208,9 +235,10 @@ class _DaytonaManager:
 
         repo_path: str | None = None
         if repo_url:
-            home_result = sandbox.process.exec("echo $HOME")
-            home = home_result.result.strip() if home_result.exit_code == 0 else "/tmp"
-            repo_path = f"{home}/repo"
+            # Usa constante hoisted em vez de `echo $HOME` — torna previsível
+            # e overridável por env, e mantém a mesma string usada no prompt do
+            # agente (_factory._codebase_block) e no payload da API pro front.
+            repo_path = DAYTONA_REPO_PATH
 
             pat = get_setting("github_pat") or ""
             effective_url = _inject_pat(repo_url, pat) if pat else repo_url
