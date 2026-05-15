@@ -1,42 +1,25 @@
+"""Sandbox status (read-only) e command exec.
+
+Step 2 reduziu este módulo:
+  - DELETED: POST /sandboxes/{slug} (criação) — substituído por POST /projects
+  - DELETED: DELETE /sandboxes/{slug}        — substituído por POST /cancel/{slug}
+  - KEPT:    GET  /sandboxes/{slug}          — usado por App.tsx polling de status
+  - KEPT:    POST /sandboxes/{slug}/exec     — usado por TerminalPanel.tsx
+"""
 import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from daytona import _DEAD_STATES, _RESTARTABLE_STATES, _RUNNING_STATES, manager
-from db import count_active_sandboxes
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sandboxes", tags=["sandboxes"])
 
-SANDBOX_LIMIT = 10
-
-
-class SandboxRequest(BaseModel):
-    repo_url: str | None = None
-    branch: str = "main"
-
 
 class ExecRequest(BaseModel):
     command: str
     timeout: int | None = None
-
-
-@router.post("/{slug}", status_code=201)
-def create_sandbox(slug: str, body: SandboxRequest):
-    if count_active_sandboxes() >= SANDBOX_LIMIT:
-        raise HTTPException(
-            429,
-            f"Limite de {SANDBOX_LIMIT} sandboxes atingido. Encerre um projeto antes de criar outro.",
-        )
-    try:
-        backend, repo_path = manager.create(slug, repo_url=body.repo_url, branch=body.branch)
-    except RuntimeError as e:
-        raise HTTPException(422, str(e))
-    except Exception as e:
-        logger.exception("Erro ao criar sandbox '%s': %s", slug, e)
-        raise HTTPException(500, f"Erro ao criar sandbox: {str(e)}")
-    return {"ok": True, "sandbox_id": backend.id, "repo_path": repo_path}
 
 
 _IDLE_RESPONSE = {
@@ -87,14 +70,6 @@ def get_sandbox(slug: str):
         "sandbox_id": backend.id,
         "repo_path": repo_path,
     }
-
-
-@router.delete("/{slug}")
-def remove_sandbox(slug: str):
-    removed = manager.remove(slug)
-    if not removed:
-        raise HTTPException(404, "sandbox não encontrado")
-    return {"ok": True}
 
 
 @router.post("/{slug}/exec")

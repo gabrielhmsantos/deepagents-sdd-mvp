@@ -1,6 +1,9 @@
 import { useRef, useState } from "react";
+import { cancelSandbox, ensureSandbox } from "./lib/api";
 
-const API = "/api/sandboxes";
+// Exec ainda usa /api/sandboxes/{slug}/exec — operação pós-criação, fora do
+// escopo do lifecycle (/ensure cuida só do ciclo create/start/recreate/delete).
+const EXEC_API = "/api/sandboxes";
 
 interface ExecEntry {
   cmd: string;
@@ -89,18 +92,12 @@ export default function DaytonaTest({ onBack }: { onBack: () => void }) {
     setRepoPath(null);
     setHistory([]);
     try {
-      const res = await fetch(`${API}/${slug}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_url: repoUrl || null, branch }),
+      const data = await ensureSandbox(slug, {
+        repo_url: repoUrl || null,
+        branch,
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail ?? res.statusText);
-      }
-      const data = await res.json();
       setSandboxId(data.sandbox_id);
-      setRepoPath(data.repo_path ?? null);
+      setRepoPath(data.repo_path);
       setStatus("ready");
     } catch (e) {
       console.error(e);
@@ -112,7 +109,7 @@ export default function DaytonaTest({ onBack }: { onBack: () => void }) {
   async function handleDelete() {
     if (!slug) return;
     try {
-      await fetch(`${API}/${slug}`, { method: "DELETE" });
+      await cancelSandbox(slug);
     } catch {
       // ignora se não existia
     }
@@ -127,7 +124,7 @@ export default function DaytonaTest({ onBack }: { onBack: () => void }) {
     setIsExecuting(true);
     const ts = new Date().toLocaleTimeString();
     try {
-      const res = await fetch(`${API}/${slug}/exec`, {
+      const res = await fetch(`${EXEC_API}/${slug}/exec`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command }),

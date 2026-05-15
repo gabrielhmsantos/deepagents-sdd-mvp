@@ -1,8 +1,15 @@
 import type { Phase } from "./types";
 
-// Artefatos prévios aprovados são injetados pelo backend (_factory.py) via
-// system prompt. O frontend só envia o que é input do usuário: descrição,
-// uploads e instrução de salvamento.
+// Fase 2: artefatos vivem no sandbox Daytona em /home/daytona/specs/{slug}/{PHASE}.md.
+// O backend hidrata esse diretório a partir do blob no /ensure antes de cada run,
+// e snapshota o draft pro blob (namespace=drafts) ao final de cada execução do agente.
+// O agente lê predecessores via read_file nesse path (sem injeção no system prompt).
+const SPECS_BASE = "/home/daytona/specs";
+
+function draftPath(slug: string, phase: Phase): string {
+  return `${SPECS_BASE}/${slug}/${phase.toUpperCase()}.md`;
+}
+
 export function buildInitialInput(
   phase: Phase,
   params: {
@@ -13,9 +20,7 @@ export function buildInitialInput(
 ): string {
   const blocks: string[] = [];
 
-  // Leading slash sinaliza ao agente que o path é absoluto virtual e está pronto pra uso —
-  // desencoraja prefixar com /repo/... (visto em GPT-5.4-mini, vide bug Azure draft path).
-  blocks.push(`[SALVAR EM]\n/drafts/${params.slug}/${phase.toUpperCase()}.md`);
+  blocks.push(`[SALVAR EM]\n${draftPath(params.slug, phase)}`);
 
   for (const u of params.uploads ?? []) {
     blocks.push(`[DOCUMENTO BASE: ${u.filename}]\n${u.content}`);
@@ -34,7 +39,7 @@ export function buildEditInput(
   currentContent: string,
   instructions: string
 ): string {
-  const path = `/drafts/${slug}/${phase.toUpperCase()}.md`;
+  const path = draftPath(slug, phase);
   return [
     `[SALVAR EM]\n${path}`,
     `[MODO EDIÇÃO]\nO arquivo já existe em ${path}.\nUse a ferramenta edit_file para fazer substituições cirúrgicas (old_string → new_string).\nNÃO use write_file. NÃO reescreva o arquivo inteiro. Faça apenas as alterações solicitadas.`,

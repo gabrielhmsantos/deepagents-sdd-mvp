@@ -16,7 +16,8 @@
       "PowerShell(uvicorn *)",
       "PowerShell(Stop-Process *)",
       "PowerShell(Get-NetTCPConnection *)",
-      "PowerShell(netstat *)"
+      "PowerShell(netstat *)",
+      "PowerShell(Get-ChildItem C:\\\\Users\\\\power\\\\Desktop\\\\deepagents-sdd-mvp\\\\backend | Where-Object { $_.Name -ne \".venv\" } | Select-Object Name)"
     ]
   }
 }

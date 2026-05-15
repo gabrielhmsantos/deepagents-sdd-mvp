@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ensureSandbox } from "../lib/api";
 import type { Phase } from "../lib/types";
 
 const API = "/api";
@@ -78,6 +79,12 @@ export function useArtifactAgent(phase: Phase, slug: string) {
       let runId: string | null = null;
 
       try {
+        // Preflight: garante sandbox vivo antes do stream. Recupera transparentemente
+        // de auto-stop (estado C) ou delete externo (estado D). Em estado B (cache
+        // hit no manager), retorna <100ms. Body vazio: backend lê repo_url/branch
+        // de `projects` (criado via POST /api/projects pelo ProjectForm).
+        await ensureSandbox(slug);
+
         const threadResp = await fetch(`${API}/threads`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

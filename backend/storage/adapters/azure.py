@@ -5,7 +5,8 @@ Requer:
   - AZURE_STORAGE_CONNECTION_STRING no .env
 
 Estrutura de blobs:
-  features/{slug}/{PHASE}.md
+  features/{slug}/{PHASE}.md   — aprovados
+  drafts/{slug}/{PHASE}.md     — drafts em andamento (snapshot por fase)
 
 Container padrão: champion-ai (criado automaticamente se não existir).
 """
@@ -31,11 +32,13 @@ class AzureBlobAdapter:
         except Exception:
             pass  # já existe
 
-    def _blob_name(self, slug: str, phase: str) -> str:
-        return f"features/{slug}/{phase.upper()}.md"
+    def _blob_name(self, slug: str, phase: str, namespace: str) -> str:
+        return f"{namespace}/{slug}/{phase.upper()}.md"
 
-    def save_artifact(self, slug: str, phase: str, content: str) -> str | None:
-        blob_name = self._blob_name(slug, phase)
+    def save_artifact(
+        self, slug: str, phase: str, content: str, namespace: str = "features"
+    ) -> str | None:
+        blob_name = self._blob_name(slug, phase, namespace)
         try:
             blob_client = self._client.get_blob_client(CONTAINER_NAME, blob_name)
             blob_client.upload_blob(content.encode("utf-8"), overwrite=True)
@@ -44,18 +47,20 @@ class AzureBlobAdapter:
             logger.warning("Azure blob upload falhou (continuando): %s", exc)
             return None
 
-    def get_artifact(self, slug: str, phase: str) -> str | None:
-        blob_name = self._blob_name(slug, phase)
+    def get_artifact(
+        self, slug: str, phase: str, namespace: str = "features"
+    ) -> str | None:
+        blob_name = self._blob_name(slug, phase, namespace)
         try:
             blob_client = self._client.get_blob_client(CONTAINER_NAME, blob_name)
             return blob_client.download_blob().readall().decode("utf-8")
         except Exception:
             return None
 
-    def list_artifacts(self, slug: str) -> list[str]:
+    def list_artifacts(self, slug: str, namespace: str = "features") -> list[str]:
         try:
             container_client = self._client.get_container_client(CONTAINER_NAME)
-            prefix = f"features/{slug}/"
+            prefix = f"{namespace}/{slug}/"
             blobs = container_client.list_blobs(name_starts_with=prefix)
             return sorted(
                 blob.name[len(prefix):].removesuffix(".md")
@@ -65,8 +70,10 @@ class AzureBlobAdapter:
         except Exception:
             return []
 
-    def delete_artifact(self, slug: str, phase: str) -> None:
-        blob_name = self._blob_name(slug, phase)
+    def delete_artifact(
+        self, slug: str, phase: str, namespace: str = "features"
+    ) -> None:
+        blob_name = self._blob_name(slug, phase, namespace)
         try:
             blob_client = self._client.get_blob_client(CONTAINER_NAME, blob_name)
             blob_client.delete_blob()

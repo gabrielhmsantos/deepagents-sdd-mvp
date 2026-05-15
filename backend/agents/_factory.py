@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 import time
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -10,11 +9,11 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.types import RunnableConfig
 from deepagents import create_deep_agent
-from deepagents.backends.filesystem import FilesystemBackend
 
 logger = logging.getLogger(__name__)
 
 from agents.llm import create_llm_provider
+from daytona import DAYTONA_SPECS_PATH
 
 # Teto de tokens por RESPOSTA (não janela de contexto — nome anterior
 # MODEL_CONTEXT_WINDOW era enganoso). Provider cobra por output, então
@@ -31,11 +30,10 @@ if _legacy and not os.environ.get("MAX_OUTPUT_TOKENS"):
 MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", _legacy or "12000"))
 PROJECT_ROOT = Path(__file__).parents[2]
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
-SPECS_DIR = PROJECT_ROOT / ".specs"
 
 PHASE_ORDER = ["CONSTITUICAO", "PRD", "ESPECIFICACAO", "PLANO", "TAREFAS"]
 
-_SAVE_INSTRUCTION = """
+_SAVE_INSTRUCTION_TEMPLATE = """
 
 ---
 
@@ -46,16 +44,14 @@ para salvar no caminho **EXATO** indicado em `[SALVAR EM]` da mensagem do usuár
 
 Regras obrigatórias:
 - Copie o path do `[SALVAR EM]` **caractere por caractere**. Sem adicionar prefixo,
-  sem converter para absoluto, sem normalizar.
-- ⚠️ O prefixo `/repo/...` mencionado em [CODEBASE] é EXCLUSIVO para LER código-fonte
-  com `ls`, `read_file`, `glob`, `grep`. **NUNCA** use esse prefixo em `write_file`
-  ou `edit_file` para salvar drafts — drafts vão para disco local FORA do sandbox,
-  e o path do `[SALVAR EM]` já está pronto pra uso direto.
-- Exemplo: se `[SALVAR EM]` diz `/drafts/foo/CONSTITUICAO.md`, chame
-  `write_file(file_path="/drafts/foo/CONSTITUICAO.md", ...)` — sem `/repo/`,
-  sem `/home/daytona/`, sem nada extra.
+  sem alterar maiúsculas/minúsculas.
+- O path é sempre absoluto e aponta para `{specs_path}/{{slug}}/{{PHASE}}.md`
+  dentro do sandbox Daytona. Esse diretório existe e está pronto pra receber
+  o arquivo.
 - O conteúdo deve ser apenas o markdown do artefato, sem preâmbulo nem comentários extras.
 """
+
+_SAVE_INSTRUCTION = _SAVE_INSTRUCTION_TEMPLATE.format(specs_path=DAYTONA_SPECS_PATH)
 
 _RETRY_MESSAGE = (
     "Você não salvou o artefato. "
@@ -106,42 +102,31 @@ class WrapperState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     retry_count: int
     # Propagado de config.configurable.slug pra route_after_run conseguir
-    # construir o draft path direto (sem regex em messages). Reducer default
-    # (overwrite) é suficiente — run_agent sempre re-popula.
+    # construir o draft path direto. Reducer default (overwrite) é suficiente —
+    # run_agent sempre re-popula.
     slug: str | None
 
 
-def _resolve_backend(slug: str | None) -> tuple:
-    """Retorna (CompositeBackend, repo_path).
-
-    Exige sandbox Daytona ativo para o slug. Falha explicitamente se ausente.
-    """
+def _resolve_backend(slug: str | None):
+    """Retorna (DaytonaBackend, repo_path) — sandbox é a única superfície de
+    file I/O do agente. Sem CompositeBackend/FilesystemBackend na Fase 2."""
     if not slug:
         raise ValueError("slug não informado no config do run.")
 
     from daytona import manager
-    from deepagents.backends.composite import CompositeBackend
 
     daytona_backend, repo_path = manager.get(slug)
     if daytona_backend is None:
         raise ValueError(
             f"Nenhum sandbox ativo para o slug '{slug}'. "
-            "Crie um sandbox com o repositório antes de gerar artefatos."
+            "Garanta o sandbox via POST /ensure/{slug} antes de gerar artefatos."
         )
-
-    composite = CompositeBackend(
-        default=FilesystemBackend(str(SPECS_DIR), virtual_mode=True),
-        routes={"/repo/": daytona_backend},
-    )
-    return composite, repo_path
+    return daytona_backend, repo_path
 
 
 def _codebase_block(repo_path: str) -> str:
-    # CompositeBackend roteia o prefixo virtual /repo/ pro DaytonaBackend; ou seja,
-    # o caminho real `{repo_path}` dentro do sandbox é acessado pelas tools como
-    # `/repo{repo_path}`. Sem isso explícito, o agente perde rounds tentando ls em
-    # /repo, /repo/home, /repo/home/daytona até finalmente achar o código.
-    virtual_repo = f"/repo{repo_path}"
+    # Paths absolutos reais dentro do sandbox — sem prefixo virtual /repo/.
+    # Agente usa o path completo direto em ls/read_file/glob/grep.
     return f"""
 
 ---
@@ -149,102 +134,76 @@ def _codebase_block(repo_path: str) -> str:
 ## CONTEXTO DO REPOSITÓRIO (MODO BROWNFIELD)
 
 [CODEBASE]
-O código real do projeto foi clonado em `{repo_path}` dentro do sandbox e é
-acessível pelas suas ferramentas EXCLUSIVAMENTE via o path virtual:
-
-    {virtual_repo}
-
-Use SEMPRE esse prefixo em `ls`, `read_file`, `glob` e `grep`.
+O código real do projeto está clonado em `{repo_path}` dentro do sandbox.
+Use esse path absoluto em todas as suas ferramentas de leitura.
 
 ❌ NUNCA faça:
-- `ls /` ou `ls /repo` — listam diretórios do container Linux (bin, etc, usr…),
-  não o código do projeto. Desperdiça rounds e tokens.
+- `ls /` — lista diretórios do container Linux (bin, etc, usr…), não o projeto.
 - `grep <pattern>` sem path ou com path `/` — varre o sistema de arquivos
-  inteiro do sandbox (~milhares de arquivos do sistema) e estoura timeout,
-  derrubando a geração. Mesma coisa pra `find /`.
-- Buscas em paths fora de `{virtual_repo}`.
+  inteiro do sandbox e estoura timeout, derrubando a geração. Mesma coisa
+  pra `find /`.
+- Buscas em paths fora de `{repo_path}`.
 
 ✅ Exemplos válidos:
-- `ls {virtual_repo}` — raiz do projeto
-- `read_file {virtual_repo}/README.md` — lê arquivo específico
-- `glob "**/*.py" {virtual_repo}` — lista arquivos Python do projeto
-- `grep "class " {virtual_repo}` — busca dentro do projeto apenas
+- `ls {repo_path}` — raiz do projeto
+- `read_file {repo_path}/README.md` — lê arquivo específico
+- `glob "**/*.py" {repo_path}` — lista arquivos Python do projeto
+- `grep "class " {repo_path}` — busca dentro do projeto apenas
 
 O artefato gerado deve referenciar arquivos e estruturas reais encontrados em
-`{virtual_repo}`.
+`{repo_path}`.
 """
 
 
-def _previous_artifacts_block(slug: str, current_phase: str) -> str:
-    """Bloco de contexto com manifesto das fases prévias + predecessor imediato em texto integral.
+def _predecessors_block(phase: str, slug: str) -> str:
+    """Lista os artefatos prévios disponíveis para leitura via read_file no sandbox.
 
-    Balanço entre token-eficiência (read_file sob demanda) e garantia (predecessor sempre presente).
-    Retorna string vazia se for a primeira fase ou se nenhuma anterior foi aprovada.
+    Substitui a antiga injeção de conteúdo de `_previous_artifacts_block`:
+    agente passa a buscar os predecessores quando precisar, em vez de receber
+    tudo pré-injetado. Reduz tokens no system prompt e desbloqueia análises
+    seletivas (grep, read parcial).
     """
-    if current_phase not in PHASE_ORDER:
+    if phase not in PHASE_ORDER:
         return ""
-    idx = PHASE_ORDER.index(current_phase)
+    idx = PHASE_ORDER.index(phase)
     if idx == 0:
         return ""
 
-    from storage.factory import create_blob_storage
+    predecessors = PHASE_ORDER[:idx]
+    lines = [f"- `{DAYTONA_SPECS_PATH}/{slug}/{p}.md` ({p})" for p in predecessors]
+    immediate = predecessors[-1]
+    paths_listed = "\n".join(lines)
 
-    blob = create_blob_storage()
-    approved_set = set(blob.list_artifacts(slug))
-    previous_approved = [p for p in PHASE_ORDER[:idx] if p in approved_set]
-    if not previous_approved:
-        return ""
+    return f"""
 
-    immediate = previous_approved[-1]
-    older = previous_approved[:-1]
+---
 
-    parts: list[str] = ["\n\n---\n\n## ARTEFATOS PRÉVIOS APROVADOS\n"]
-    if older:
-        parts.append(
-            "**Anteriores (use `read_file` para o conteúdo completo quando precisar):**"
-        )
-        for p in older:
-            parts.append(f"- {p} → `features/{slug}/{p}.md`")
-        parts.append("")
+## ARTEFATOS PRÉVIOS DISPONÍVEIS
 
-    parts.append(
-        f"**Predecessor imediato (incluído integralmente abaixo — também disponível em "
-        f"`features/{slug}/{immediate}.md`):**\n"
-    )
-    parts.append(f"### {immediate}\n")
-    content = blob.get_artifact(slug, immediate) or "(conteúdo indisponível)"
-    parts.append(content)
+[CONTEXTO PRÉ-EXISTENTE]
+Os artefatos das fases anteriores deste slug estão materializados no sandbox
+e disponíveis para leitura via tool call:
 
-    return "\n".join(parts)
+{paths_listed}
 
+**Antes de produzir esta fase**, leia o predecessor imediato (`{immediate}`)
+com `read_file` — é a fonte primária de continuidade. Consulte os artefatos
+mais antigos sob demanda quando precisar fechar lacunas de rastreabilidade
+(BR-XXX, FR-XXX, etc.).
 
-def _draft_path_for(slug: str, phase: str) -> Path:
-    """Caminho canônico do draft no disco. Fonte única — consistente com
-    api.py:_draft_path e prompts.ts:buildInitialInput."""
-    return SPECS_DIR / "drafts" / slug / f"{phase}.md"
-
-
-def _get_draft_path_via_regex(messages: list) -> Path | None:
-    """Fallback: parseia `[SALVAR EM]` das messages quando state.slug não está
-    populado (ex.: chamada via studio sem configurable.slug). Mantido só por
-    safety-net — caminho normal é _draft_path_for(slug, phase)."""
-    for m in messages:
-        content = m.content if hasattr(m, "content") else m.get("content", "")
-        if not isinstance(content, str):
-            continue
-        # Aceita os 3 formatos: `drafts/foo.md`, `/drafts/foo.md` (novo, com leading
-        # slash desde o fix Azure), e `.specs/drafts/foo.md` (caso o agente normalize).
-        match = re.search(r"\[SALVAR EM\]\s*\n(?:\.specs)?/?(drafts/.+\.md)", content)
-        if match:
-            return SPECS_DIR / match.group(1).strip()
-    return None
+❌ Não tente ler em outros paths (`features/...`, `drafts/...`, blob, etc.).
+Os artefatos só existem nos paths absolutos listados acima.
+"""
 
 
 def make_agent(prompt_filename: str):
     base_prompt = (PROMPTS_DIR / prompt_filename).read_text(encoding="utf-8")
     phase = prompt_filename.removesuffix(".md").upper()
 
-    def run_agent(state: WrapperState, config: RunnableConfig) -> dict: 
+    def _draft_sandbox_path(slug: str) -> str:
+        return f"{DAYTONA_SPECS_PATH}/{slug}/{phase}.md"
+
+    def run_agent(state: WrapperState, config: RunnableConfig) -> dict:
         slug = (config.get("configurable") or {}).get("slug")
         attempt = state.get("retry_count", 0) + 1
         logger.info(
@@ -254,14 +213,15 @@ def make_agent(prompt_filename: str):
         backend, repo_path = _resolve_backend(slug)
 
         # Ordem importa: _SAVE_INSTRUCTION vai POR ÚLTIMO pra garantir recência no
-        # contexto do modelo. Sem isso, o _codebase_block ("use SEMPRE o prefixo
-        # /repo/...") era o último bloco antes do user message, e GPT-5.4-mini
-        # extrapolava o prefixo pro write_file de drafts (bug Azure draft path).
+        # contexto do modelo. Sem isso, _codebase_block era o último bloco antes
+        # do user message e o modelo extrapolava o prefixo pro write_file.
+        # Sem _previous_artifacts_block na Fase 2 — agente lê predecessores via
+        # tool call (read_file) orientado por _predecessors_block.
         system_prompt = base_prompt
         if repo_path:
             system_prompt += _codebase_block(repo_path)
         if slug:
-            system_prompt += _previous_artifacts_block(slug, phase)
+            system_prompt += _predecessors_block(phase, slug)
         system_prompt += _SAVE_INSTRUCTION
 
         _model = _LLM_PROVIDER.build_chat_model(max_output_tokens=MAX_OUTPUT_TOKENS)
@@ -277,18 +237,11 @@ def make_agent(prompt_filename: str):
             result = deep_agent.invoke({"messages": state["messages"]})
         except Exception as exc:
             logger.exception("[%s] deep_agent.invoke RAISED: %s", phase, exc)
-            # Converte exceção em mensagem de erro injetada na conversa em vez
-            # de derrubar o run. Detecta rate-limit (HTTP 429) e aplica backoff
-            # exponencial antes de retornar; outras exceções (timeout Daytona,
-            # parser deepagents) retornam direto pro retry-loop sem espera.
             error_summary = f"{type(exc).__name__}: {str(exc)[:400]}"
             is_rate_limit = _is_rate_limit_error(exc)
             will_retry = attempt < MAX_AGENT_ATTEMPTS
 
             if is_rate_limit and will_retry:
-                # Backoff alinhado a 20 req/min do OpenRouter (janela 60s).
-                # time.sleep bloqueia o worker thread (sync) mas fica dentro do
-                # STREAM_IDLE_TIMEOUT_MS=5min do front.
                 wait_secs = _rate_limit_backoff_secs(attempt)
                 logger.warning(
                     "[%s] rate-limit detectado (attempt=%d), aguardando %ds antes do retry",
@@ -303,7 +256,6 @@ def make_agent(prompt_filename: str):
                     "no caminho indicado em [SALVAR EM]."
                 )
             elif is_rate_limit:
-                # Última tentativa, sem mais backoff — vai cair em phantom.
                 msg_hint = (
                     f"⚠️ Rate-limit persistente do provider: {error_summary}\n\n"
                     "Sem mais tentativas. O usuário precisa trocar pra modelo pago "
@@ -315,7 +267,7 @@ def make_agent(prompt_filename: str):
                     "Possível causa: escopo de busca grande demais (ex.: grep/find em '/' "
                     "ou em path fora do repositório clonado), ou tool inválida. "
                     "Tente abordagem diferente — use caminhos específicos DENTRO do "
-                    "path virtual do repositório (veja [CODEBASE] no system prompt). "
+                    "path do repositório (veja [CODEBASE] no system prompt). "
                     "Quando tiver informação suficiente, salve o artefato com write_file "
                     "no caminho indicado em [SALVAR EM]."
                 )
@@ -344,13 +296,13 @@ def make_agent(prompt_filename: str):
                     name = getattr(tc, "name", "?")
                     args = getattr(tc, "args", {})
                 args_str = str(args)[:240]
-                logger.info("[%s] tool_call name=%s args=%s", phase, name, args_str)
+                logger.debug("[%s] tool_call name=%s args=%s", phase, name, args_str)
             msg_type = getattr(m, "type", "") or type(m).__name__
             if msg_type == "tool" or (getattr(m, "name", None) and not tool_calls):
                 content = getattr(m, "content", "")
                 content_str = (content if isinstance(content, str) else str(content))[:240]
-                logger.info("[%s] tool_result name=%s -> %s",
-                            phase, getattr(m, "name", "?"), content_str)
+                logger.debug("[%s] tool_result name=%s -> %s",
+                             phase, getattr(m, "name", "?"), content_str)
 
         logger.info("[%s] deep_agent done, msgs_out=%d", phase, len(result["messages"]))
         return {
@@ -366,29 +318,60 @@ def make_agent(prompt_filename: str):
         return {"messages": [HumanMessage(content=_RETRY_MESSAGE)]}
 
     def route_after_run(state: WrapperState) -> str:
-        # Caminho canônico via state.slug (populado por run_agent) + closure phase.
-        # Regex em messages é fallback pra casos onde config.slug não foi passado.
-        slug_state = state.get("slug")
-        if slug_state:
-            draft = _draft_path_for(slug_state, phase)
-        else:
-            draft = _get_draft_path_via_regex(state["messages"])
-            if draft is not None:
-                logger.warning(
-                    "[%s] route_after_run usando fallback regex (state.slug vazio) → %s",
-                    phase, draft,
-                )
-        file_ok = draft is not None and draft.exists() and draft.stat().st_size > DRAFT_MIN_BYTES
+        """Verifica que o agente salvou o draft no sandbox e snapshota pro blob.
+
+        Source of truth = blob. Sandbox armazena o draft transitoriamente entre
+        agente e snapshot — se sandbox morrer antes daqui, o trabalho é perdido
+        (decisão consciente: usuário re-roda em ~30s).
+        """
+        slug = state.get("slug")
         rc = state.get("retry_count", 0)
+        if not slug:
+            logger.warning("[%s] route_after_run sem slug — END", phase)
+            return END
+
+        try:
+            from daytona import manager
+            backend, _ = manager.get(slug)
+        except Exception as exc:
+            logger.warning("[%s] route_after_run: manager.get falhou: %s", phase, exc)
+            return END if rc >= MAX_AGENT_ATTEMPTS else "inject_retry"
+
+        if backend is None:
+            logger.warning("[%s] route_after_run: sandbox ausente pra slug=%s", phase, slug)
+            return END if rc >= MAX_AGENT_ATTEMPTS else "inject_retry"
+
+        draft_path = _draft_sandbox_path(slug)
+        try:
+            responses = backend.download_files([draft_path])
+        except Exception as exc:
+            logger.warning("[%s] download_files falhou: %s", phase, exc)
+            return END if rc >= MAX_AGENT_ATTEMPTS else "inject_retry"
+
+        resp = responses[0] if responses else None
+        content_bytes = getattr(resp, "content", None) if resp else None
+        error = getattr(resp, "error", None) if resp else "no_response"
+        size = len(content_bytes) if content_bytes else 0
+        file_ok = error is None and size > DRAFT_MIN_BYTES
+
         logger.info(
-            "[%s] route_after_run draft=%s exists=%s size=%s retry_count=%d",
-            phase,
-            str(draft) if draft else "None",
-            draft.exists() if draft else False,
-            draft.stat().st_size if (draft and draft.exists()) else 0,
-            rc,
+            "[%s] route_after_run draft=%s error=%s size=%d retry_count=%d",
+            phase, draft_path, error, size, rc,
         )
-        if file_ok or rc >= MAX_AGENT_ATTEMPTS:
+
+        if file_ok:
+            try:
+                from storage.factory import create_blob_storage
+                blob = create_blob_storage()
+                blob.save_artifact(
+                    slug, phase, content_bytes.decode("utf-8"), namespace="drafts",
+                )
+                logger.info("[%s] snapshot blob OK (slug=%s, %d bytes)", phase, slug, size)
+            except Exception as exc:
+                logger.warning("[%s] snapshot blob FAILED (slug=%s): %s", phase, slug, exc)
+            return END
+
+        if rc >= MAX_AGENT_ATTEMPTS:
             return END
         return "inject_retry"
 
