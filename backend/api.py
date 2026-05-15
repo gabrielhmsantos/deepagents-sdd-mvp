@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import logging
+import uuid
 import os
 import socket
 import threading
@@ -153,7 +154,7 @@ class Artifact(BaseModel):
 
 
 class ProjectCreate(BaseModel):
-    slug: str
+    slug: str | None = None
     ssg_id: str | None = None
     github_repo_owner: str | None = None
     github_repo_name: str | None = None
@@ -175,11 +176,19 @@ def create_project(body: ProjectCreate):
     `ensure_sandbox(slug)`. Step 2 substitui o uso anterior de POST /ensure
     com body — o body agora vive aqui.
     """
-    from db import upsert_project
+    from db import upsert_project, get_project
 
-    if not body.slug or not body.slug.strip():
-        raise HTTPException(400, "slug obrigatorio")
-    slug = body.slug.strip().lower()
+    # Slug auto-gerado: 8 chars hex (uuid4). Loop defensivo contra colisão
+    # (improvável com 4 bilhões de combinações, mas UNIQUE constraint protege).
+    if body.slug and body.slug.strip():
+        slug = body.slug.strip().lower()
+    else:
+        for _ in range(5):
+            slug = uuid.uuid4().hex[:8]
+            if not get_project(slug):
+                break
+        else:
+            raise HTTPException(500, "Falha ao gerar slug único após 5 tentativas")
 
     # Validação SSG_ID: 1-5 dígitos (paridade visual Champion).
     if body.ssg_id is not None and body.ssg_id.strip():
@@ -235,6 +244,9 @@ def list_projects_route():
     """Lista todos os projetos. Alimenta o sidebar do front."""
     from db import list_projects as _list
     rows = _list()
+    # Import aqui pra evitar circular no módulo.
+    from db import list_project_files as _list_files
+
     return {
         "projects": [
             {
@@ -289,6 +301,13 @@ def delete_project_route(slug: str):
         logger.warning("delete_project: DB delete falhou pra '%s': %s", slug, exc)
         project_row_deleted = False
 
+    # Wipe uploads do filesystem
+    from uploads import UPLOADS
+    uploads_dir = UPLOADS / slug
+    if uploads_dir.exists():
+        import shutil
+        shutil.rmtree(uploads_dir, ignore_errors=True)
+
     return {
         "ok": True,
         "wiped": {
@@ -327,6 +346,25 @@ def admin_list_projects():
             "created_at": r["created_at"],
         })
     return {"projects": out}
+
+
+# ── Per-project files (metadata from SQLite) ───────────────────────────────
+
+@app.get("/projects/{slug}/files")
+def list_project_files_route(slug: str):
+    """Retorna metadados dos arquivos enviados para o projeto."""
+    from db import list_project_files
+    rows = list_project_files(slug)
+    return {
+        "files": [
+            {
+                "filename": r["filename"],
+                "approx_tokens": r["approx_tokens"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+    }
 
 
 # ── Sandbox lifecycle (preflight + cancel) ──────────────────────────────────

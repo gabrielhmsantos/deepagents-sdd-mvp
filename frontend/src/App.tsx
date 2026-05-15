@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { deleteProject as deleteProjectApi, listAdminProjects, zipUrl } from "./lib/api";
+import { deleteProject as deleteProjectApi, listAdminProjects, listProjectFiles, zipUrl } from "./lib/api";
 import { PHASES } from "./lib/types";
 import type { AdminProjectRow, Phase, Project, UploadedFile } from "./lib/types";
 import { PhaseSection } from "./components/PhaseSection";
@@ -73,7 +73,7 @@ export default function App() {
   );
   const [activeView, setActiveView] = useState<ActiveView>("project");
   const [adminRows, setAdminRows] = useState<AdminProjectRow[]>([]);
-  const [files, setFiles] = useLocalStorage<UploadedFile[]>("champion-files", []);
+  const [files, setFiles] = useState<UploadedFile[]>([]);
 
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus>("idle");
   const [repoPath, setRepoPath] = useState<string | null>(null);
@@ -96,6 +96,7 @@ export default function App() {
     try {
       localStorage.removeItem("champion-slug");
       localStorage.removeItem("champion-description");
+      localStorage.removeItem("champion-files");
     } catch {
       /* noop */
     }
@@ -148,6 +149,31 @@ export default function App() {
     return () => clearInterval(id);
   }, [activeSlug]);
 
+  // Carrega arquivos do projeto ativo via SQLite-backed endpoint.
+  const refreshFiles = useCallback(async (slug: string) => {
+    try {
+      const pfiles = await listProjectFiles(slug);
+      setFiles(
+        pfiles.map((pf) => ({
+          filename: pf.filename,
+          approxTokens: pf.approx_tokens,
+          selected: true,
+          uploadSlug: slug,
+        }))
+      );
+    } catch {
+      setFiles([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeSlug) {
+      setFiles([]);
+      return;
+    }
+    refreshFiles(activeSlug);
+  }, [activeSlug, refreshFiles]);
+
   // ── Callbacks ──────────────────────────────────────────────────────────────
   const onSelectProject = useCallback(
     (slug: string) => {
@@ -169,8 +195,10 @@ export default function App() {
       await refreshProjects();
       setActiveSlug(resp.slug);
       setActiveView("project");
+      // Carrega os arquivos que foram uploaded durante a criação.
+      refreshFiles(resp.slug);
     },
-    [refreshProjects, setActiveSlug]
+    [refreshProjects, setActiveSlug, refreshFiles]
   );
 
   const onResetActiveProject = useCallback(async () => {
@@ -249,7 +277,7 @@ export default function App() {
           >
             <ProjectHeader project={headerProject} onReset={onResetActiveProject} />
 
-            {/* Uploads (power-user — opcional pra cada fase) */}
+            {/* Documentos base (per-project — upload + lista do backend) */}
             <div>
               <label
                 style={{
@@ -264,7 +292,15 @@ export default function App() {
               >
                 Documentos base
               </label>
-              <UploadDropzone slug={activeSlug ?? "default"} files={files} onChange={setFiles} />
+              <UploadDropzone
+                slug={activeSlug ?? "default"}
+                files={files}
+                onChange={(newFiles) => {
+                  setFiles(newFiles);
+                  // Refresh from backend to stay in sync after upload/delete.
+                  if (activeSlug) refreshFiles(activeSlug);
+                }}
+              />
             </div>
 
             {/* Terminal colapsável — power-user feature */}

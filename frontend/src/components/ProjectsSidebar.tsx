@@ -138,7 +138,7 @@ export function ProjectsSidebar({
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {p.slug}
+                  {p.idea_snippet || p.slug}
                 </span>
                 {p.ssg_id && (
                   <span
@@ -155,6 +155,9 @@ export function ProjectsSidebar({
                     #{p.ssg_id}
                   </span>
                 )}
+              </div>
+              <div style={{ fontSize: "0.65rem", color: s.muted, fontFamily: "monospace", marginBottom: 4 }}>
+                {p.slug}
               </div>
               {/* 5 dots de fases */}
               <div style={{ display: "flex", gap: 3, alignItems: "center" }}>

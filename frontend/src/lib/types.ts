@@ -68,12 +68,19 @@ export interface Project {
 }
 
 export interface ProjectCreateBody {
-  slug: string;
+  slug?: string;
   ssg_id?: string | null;
   github_repo_owner?: string | null;
   github_repo_name?: string | null;
   github_default_branch?: string | null;
   idea?: string | null;
+}
+
+// Metadados de arquivo retornados por GET /projects/{slug}/files.
+export interface ProjectFile {
+  filename: string;
+  approx_tokens: number;
+  created_at: string;
 }
 
 export interface ProjectCreateResponse {

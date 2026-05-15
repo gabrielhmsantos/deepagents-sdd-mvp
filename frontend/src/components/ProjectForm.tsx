@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { createProject, friendlyError } from "../lib/api";
+import { useRef, useState } from "react";
+import { createProject, friendlyError, uploadFile } from "../lib/api";
 import type { ProjectCreateResponse } from "../lib/types";
 import { GreenfieldWarningModal } from "./GreenfieldWarningModal";
 import { RepoPicker, type RepoSelection } from "./RepoPicker";
@@ -43,41 +43,77 @@ const labelStyle: React.CSSProperties = {
   letterSpacing: "0.05em",
 };
 
-function normalizeSlug(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/--+/g, "-");
+// Arquivo pendente (ainda não fez upload — aguardando criação do projeto).
+interface PendingFile {
+  file: File;
+  name: string;
 }
 
+const ALLOWED_EXTS = [".pdf", ".docx", ".txt", ".md"];
+
 export function ProjectForm({ onProjectCreated, onOpenSettings }: Props) {
-  const [slugInput, setSlugInput] = useState("");
   const [ssgId, setSsgId] = useState("");
   const [idea, setIdea] = useState("");
   const [repo, setRepo] = useState<RepoSelection | null>(null);
   const [branchOverride, setBranchOverride] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showGreenfieldWarning, setShowGreenfieldWarning] = useState(false);
   const { showToast } = useToast();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const slug = normalizeSlug(slugInput);
   const effectiveBranch = branchOverride.trim() || repo?.default_branch || "";
-  const canSubmit = slug.length >= 3 && idea.trim().length > 0 && !isSubmitting;
+  const canSubmit = idea.trim().length > 0 && !isSubmitting;
+
+  function handleFilesPicked(fileList: FileList) {
+    const newFiles: PendingFile[] = [];
+    for (const file of Array.from(fileList)) {
+      const ext = "." + file.name.split(".").pop()?.toLowerCase();
+      if (!ALLOWED_EXTS.includes(ext)) {
+        showToast(`Formato não suportado: ${file.name}`, "error");
+        continue;
+      }
+      // Evita duplicatas pelo nome.
+      if (pendingFiles.some((p) => p.name === file.name)) continue;
+      newFiles.push({ file, name: file.name });
+    }
+    if (newFiles.length) {
+      setPendingFiles((prev) => [...prev, ...newFiles]);
+    }
+  }
+
+  function removePendingFile(name: string) {
+    setPendingFiles((prev) => prev.filter((p) => p.name !== name));
+  }
 
   async function doSubmit() {
     setError(null);
     setIsSubmitting(true);
     try {
+      // 1. Cria projeto (slug auto-gerado no backend).
       const resp = await createProject({
-        slug,
         ssg_id: ssgId.trim() || null,
         github_repo_owner: repo?.owner ?? null,
         github_repo_name: repo?.name ?? null,
         github_default_branch: effectiveBranch || null,
         idea: idea.trim() || null,
       });
+
+      // 2. Upload dos arquivos pendentes em paralelo.
+      if (pendingFiles.length > 0) {
+        const uploadResults = await Promise.allSettled(
+          pendingFiles.map((pf) => uploadFile(resp.slug, pf.file))
+        );
+        const failures = uploadResults.filter((r) => r.status === "rejected");
+        if (failures.length > 0) {
+          showToast(
+            `${failures.length} arquivo(s) falharam no upload. Os demais foram enviados.`,
+            "error"
+          );
+        }
+      }
+
       showToast(`Projeto '${resp.slug}' criado (${resp.mode})`, "success");
       onProjectCreated(resp);
     } catch (e) {
@@ -114,41 +150,23 @@ export function ProjectForm({ onProjectCreated, onOpenSettings }: Props) {
           Criar novo projeto
         </h2>
         <p style={{ margin: "0.5rem 0 0", fontSize: "0.8rem", color: s.muted, lineHeight: 1.5 }}>
-          Preencha a ideia e (opcionalmente) conecte um repositório GitHub.
-          O primeiro artefato fica bloqueado até o submit.
+          Preencha a ideia, adicione documentos base e (opcionalmente) conecte um repositório GitHub.
         </p>
       </div>
 
-      {/* Slug + SSG_ID lado a lado */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 140px", gap: "0.75rem" }}>
-        <div>
-          <label style={labelStyle}>Slug do épico</label>
-          <input
-            style={inputStyle}
-            value={slugInput}
-            onChange={(e) => setSlugInput(e.target.value)}
-            placeholder="ex: meu-epico"
-            disabled={isSubmitting}
-          />
-          {slug && slug !== slugInput && (
-            <p style={{ fontSize: "0.7rem", color: s.muted, margin: "0.25rem 0 0" }}>
-              → <code style={{ background: s.surface, padding: "1px 5px", borderRadius: 3 }}>{slug}</code>
-            </p>
-          )}
-        </div>
-        <div>
-          <label style={labelStyle}>SSG ID</label>
-          <input
-            style={{ ...inputStyle, fontFamily: "monospace", textAlign: "center" }}
-            value={ssgId}
-            onChange={(e) => setSsgId(e.target.value.replace(/\D/g, "").slice(0, 5))}
-            inputMode="numeric"
-            pattern="[0-9]*"
-            maxLength={5}
-            placeholder="12345"
-            disabled={isSubmitting}
-          />
-        </div>
+      {/* SSG_ID */}
+      <div>
+        <label style={labelStyle}>SSG ID</label>
+        <input
+          style={{ ...inputStyle, fontFamily: "monospace", maxWidth: 160 }}
+          value={ssgId}
+          onChange={(e) => setSsgId(e.target.value.replace(/\D/g, "").slice(0, 5))}
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={5}
+          placeholder="12345"
+          disabled={isSubmitting}
+        />
       </div>
 
       {/* Idea textarea */}
@@ -161,6 +179,87 @@ export function ProjectForm({ onProjectCreated, onOpenSettings }: Props) {
           placeholder="Descreva o produto, épico ou feature a ser documentado…"
           disabled={isSubmitting}
         />
+      </div>
+
+      {/* Documentos base (inline upload dropzone) */}
+      <div>
+        <label style={labelStyle}>Documentos base</label>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => fileInputRef.current?.click()}
+          onKeyDown={(e) => e.key === "Enter" && fileInputRef.current?.click()}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files.length) handleFilesPicked(e.dataTransfer.files);
+          }}
+          style={{
+            border: "1.5px dashed #475569",
+            borderRadius: "0.5rem",
+            padding: "0.75rem 1rem",
+            cursor: "pointer",
+            textAlign: "center",
+            color: "#64748b",
+            fontSize: "0.8rem",
+            transition: "border-color 0.15s",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#7c3aed")}
+          onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#475569")}
+        >
+          Soltar PDF / DOCX / TXT / MD aqui ou{" "}
+          <span style={{ color: "#a78bfa", textDecoration: "underline" }}>clique para selecionar</span>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.docx,.txt,.md"
+          multiple
+          style={{ display: "none" }}
+          onChange={(e) => {
+            if (e.target.files?.length) handleFilesPicked(e.target.files);
+          }}
+        />
+        {pendingFiles.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem", marginTop: "0.5rem" }}>
+            {pendingFiles.map((pf) => (
+              <div
+                key={pf.name}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  background: s.surface,
+                  border: `1px solid ${s.border}`,
+                  borderRadius: "0.375rem",
+                  padding: "0.4rem 0.6rem",
+                  fontSize: "0.78rem",
+                }}
+              >
+                <span style={{ flex: 1, color: "#cbd5e1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  📎 {pf.name}
+                </span>
+                <span style={{ color: s.muted, whiteSpace: "nowrap" }}>
+                  {(pf.file.size / 1024).toFixed(0)} KB
+                </span>
+                <button
+                  onClick={() => removePendingFile(pf.name)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: s.muted,
+                    fontSize: "0.9rem",
+                    lineHeight: 1,
+                  }}
+                  title="Remover"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* GitHub repo picker */}

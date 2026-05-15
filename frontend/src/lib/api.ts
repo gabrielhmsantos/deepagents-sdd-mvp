@@ -6,6 +6,7 @@ import type {
   Project,
   ProjectCreateBody,
   ProjectCreateResponse,
+  ProjectFile,
 } from "./types";
 
 const BASE = "/api";
@@ -215,6 +216,14 @@ export async function deleteUpload(slug: string, filename: string) {
   return json(
     await fetch(`${BASE}/uploads/${slug}/${filename}`, { method: "DELETE" })
   );
+}
+
+// Per-project file metadata (backed by SQLite project_files table).
+export async function listProjectFiles(slug: string): Promise<ProjectFile[]> {
+  const data = await json<{ files: ProjectFile[] }>(
+    await fetch(`${BASE}/projects/${slug}/files`)
+  );
+  return data.files;
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
