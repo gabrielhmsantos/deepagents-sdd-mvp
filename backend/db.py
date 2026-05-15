@@ -169,6 +169,22 @@ def init_db() -> None:
             )
         """)
 
+        # Metadados de arquivos enviados por projeto. O arquivo físico vive
+        # em `.specs/uploads/{slug}/` (gerenciado por uploads.py); aqui só
+        # registramos nome + tokens pra o frontend listar sem varrer disco.
+        # CASCADE em project_slug garante limpeza automática ao deletar projeto.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS project_files (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_slug  TEXT NOT NULL,
+                filename      TEXT NOT NULL,
+                approx_tokens INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (project_slug, filename),
+                FOREIGN KEY (project_slug) REFERENCES projects(slug) ON DELETE CASCADE
+            )
+        """)
+
 
 # ══ Legacy helpers (sandboxes lifecycle) — mantidos pra Fase 1/2 ═════════════
 
@@ -302,3 +318,38 @@ def set_user_github_pat(pat: str) -> None:
             """,
             (pat,),
         )
+
+
+# ══ Project files (per-project upload metadata) ══════════════════════════════
+
+def add_project_file(slug: str, filename: str, approx_tokens: int) -> None:
+    """Registra (ou atualiza) metadados de um arquivo enviado pro projeto."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO project_files (project_slug, filename, approx_tokens)
+            VALUES (?, ?, ?)
+            ON CONFLICT(project_slug, filename) DO UPDATE SET
+                approx_tokens = excluded.approx_tokens
+            """,
+            (slug, filename, approx_tokens),
+        )
+
+
+def list_project_files(slug: str) -> list[sqlite3.Row]:
+    """Lista metadados dos arquivos enviados pra um projeto."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT filename, approx_tokens, created_at FROM project_files WHERE project_slug = ? ORDER BY created_at",
+            (slug,),
+        ).fetchall()
+
+
+def delete_project_file(slug: str, filename: str) -> bool:
+    """Remove registro de arquivo. Retorna True se algo foi removido."""
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "DELETE FROM project_files WHERE project_slug = ? AND filename = ?",
+            (slug, filename),
+        )
+        return cursor.rowcount > 0

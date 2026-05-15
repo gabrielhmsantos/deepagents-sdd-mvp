@@ -15,7 +15,6 @@ interface Props {
   isApproved: boolean;
   isActive: boolean;
   isLocked: boolean;
-  sandboxReady: boolean;
   onApproved: () => void;
 }
 
@@ -166,7 +165,7 @@ type Mode = "idle" | "view-draft" | "generating";
 
 export function PhaseSection({
   phase, slug, description, files,
-  isApproved, isActive, isLocked, sandboxReady, onApproved,
+  isApproved, isActive, isLocked, onApproved,
 }: Props) {
   const [mode, setMode] = useState<Mode>("idle");
   const [streamKey, setStreamKey] = useState(0);
@@ -293,24 +292,16 @@ export function PhaseSection({
         <span style={{ color: "#475569", fontSize: "0.78rem", flex: 1 }}>{PHASE_DESCRIPTIONS[phase]}</span>
         <button
           onClick={() => startGenerate()}
-          disabled={!slug || building || !sandboxReady}
-          style={btn(slug && !building && sandboxReady ? "#7c3aed" : "#334155", "#fff")}
+          disabled={!slug || building}
+          style={btn(slug && !building ? "#7c3aed" : "#334155", "#fff")}
         >
           {building ? "Preparando…" : mode === "generating" ? "Re-gerar" : draft && mode === "idle" ? "Re-gerar" : "Gerar"}
         </button>
       </div>
-
-      {/* Banner: sandbox ausente */}
-      {!sandboxReady && (
-        <div style={{
-          marginBottom: "1rem", padding: "0.65rem 1rem",
-          background: "#1a1200", border: "1px solid #78350f",
-          borderRadius: "0.5rem", fontSize: "0.8rem", color: "#fbbf24",
-        }}>
-          Nenhum sandbox ativo para este slug. Clique em{" "}
-          <strong>Daytona ↗</strong> no topo, crie um sandbox com o repositório e volte aqui.
-        </div>
-      )}
+      {/* Sandbox é gerenciado automaticamente: o preflight em useArtifactAgent
+          (POST /ensure/{slug}) cria/acorda/recria conforme necessário a cada
+          Gerar. `sandboxReady` (vindo do polling de /sandboxes/{slug}) só
+          informa o TerminalPanel — não gateia mais o botão. */}
 
       {/* Aviso de draft existente */}
       {draft && mode === "idle" && (

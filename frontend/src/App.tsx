@@ -290,7 +290,6 @@ export default function App() {
                   isApproved={approvedPhases.has(phase)}
                   isActive={phase === activePhase}
                   isLocked={!isProjectSubmitted || (!approvedPhases.has(phase) && phase !== activePhase)}
-                  sandboxReady={sandboxReady}
                   onApproved={onApproved}
                 />
               ))}
