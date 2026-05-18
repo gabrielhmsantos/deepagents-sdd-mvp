@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { approve, deleteDraft, readArtifact, readDraft, readExtracted } from "../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { approve, readArtifact, readDraft, readExtracted } from "../lib/api";
 import { buildEditInput, buildInitialInput } from "../lib/prompts";
 import { PHASE_DESCRIPTIONS, PHASE_LABELS } from "../lib/types";
 import type { Phase, UploadedFile } from "../lib/types";
 import { useArtifactAgent } from "../hooks/useArtifactAgent";
+import { ClarificationDialog } from "./ClarificationDialog";
 import { EditModeDialog } from "./EditModeDialog";
 import { MarkdownPreview } from "./MarkdownPreview";
 
@@ -12,7 +13,6 @@ interface Props {
   slug: string;
   description: string;
   files: UploadedFile[];
-  previousPhases: Phase[];       // fases já aprovadas antes desta
   isApproved: boolean;
   isActive: boolean;
   isLocked: boolean;
@@ -28,32 +28,46 @@ interface StreamProps {
 }
 
 function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
-  const { isLoading, submit } = useArtifactAgent(phase);
-  const submitted = useRef(false);
-  const hasStarted = useRef(false);  // true assim que isLoading virar true pela 1ª vez
+  const { isLoading, isError, errorMessage, wasCanceled, submit, cancel,
+          clarificationQuestions, submitAnswers } = useArtifactAgent(phase, slug);
   const [preview, setPreview] = useState("");
   const [done, setDone] = useState(false);
+  // Phantom completion: stream fechou mas readDraft devolveu null. Significa
+  // que o agente terminou sem chamar write_file (MAX_RETRIES esgotado, ou path
+  // errado em [SALVAR EM]). Sem este estado, "done=true" liberava o botão
+  // Aprovar e o clique disparava 404 silencioso em /approve.
+  const [phantom, setPhantom] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
 
-  useEffect(() => {
-    if (!submitted.current) {
-      submitted.current = true;
-      submit({ messages: [{ role: "user", content: initialInput }] });
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Fim do stream: só lê o draft após o stream ter de fato iniciado e terminado
-  useEffect(() => {
-    if (isLoading) {
-      hasStarted.current = true;
-      return;
-    }
-    if (!hasStarted.current || done) return;
-    setDone(true);
+  // Carrega o draft do disco — só chamado quando submit retorna "completed"
+  // (server fechou o SSE naturalmente). NÃO chamar em "aborted": em StrictMode
+  // dev o submit roda 2x e a 1ª passada é abortada pelo cleanup; se "done"
+  // disparasse na transição isLoading=true→false do submit abortado, a UI
+  // mostraria "Aprovar"/preview vazio enquanto o agente ainda gera.
+  //
+  // Se readDraft retornar null/erro, vira phantom completion em vez de done.
+  const handleCompleted = useCallback(() => {
     readDraft(slug, phase.toUpperCase())
-      .then((saved) => { if (saved) setPreview(saved); })
-      .catch(() => {});
-  }, [isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+      .then((saved) => {
+        if (saved) {
+          setPreview(saved);
+          setDone(true);
+          setPhantom(false);
+        } else {
+          setPhantom(true);
+        }
+      })
+      .catch(() => setPhantom(true));
+  }, [slug, phase]);
+
+  // StrictMode dev roda este efeito 2x (mount → cleanup → mount). O cleanup em
+  // useArtifactAgent aborta o fetch da 1ª passada; a 2ª passada chama submit
+  // de novo. Como submit retorna o outcome ("completed" | "aborted" | "error"),
+  // só disparamos handleCompleted para a passada que realmente terminou.
+  useEffect(() => {
+    submit({ messages: [{ role: "user", content: initialInput }] })
+      .then((result) => { if (result === "completed") handleCompleted(); });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleApprove = useCallback(async () => {
     try {
@@ -68,19 +82,29 @@ function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
     const cur = preview;
     setShowEdit(false);
     setDone(false);
+    setPhantom(false);
     setPreview("");
-    submit({ messages: [{ role: "user", content: buildEditInput(phase, slug, cur, instructions) }] });
-  }, [phase, slug, preview, submit]);
+    submit({ messages: [{ role: "user", content: buildEditInput(phase, slug, cur, instructions) }] })
+      .then((result) => { if (result === "completed") handleCompleted(); });
+  }, [phase, slug, preview, submit, handleCompleted]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
         <span style={{ color: "#64748b", fontSize: "0.78rem", flex: 1 }}>
           {isLoading && "⏳ Gerando artefato, aguarde…"}
-          {!isLoading && done && "✅ Pronto para revisão"}
-          {!isLoading && !done && "Aguardando resposta…"}
+          {!isLoading && isError && "❌ Falhou"}
+          {!isLoading && !isError && wasCanceled && "🚫 Cancelado pelo usuário"}
+          {!isLoading && !isError && !wasCanceled && phantom && "⚠️ Agente terminou sem salvar — veja o log do backend"}
+          {!isLoading && !isError && !wasCanceled && !phantom && done && "✅ Pronto para revisão"}
+          {!isLoading && !isError && !wasCanceled && !phantom && !done && "Aguardando resposta…"}
         </span>
-        {done && (
+        {isLoading && (
+          <button onClick={cancel} style={btn("#7f1d1d", "#fecaca")}>
+            Cancelar
+          </button>
+        )}
+        {done && !isError && !phantom && !wasCanceled && (
           <>
             <button onClick={() => setShowEdit(true)} style={btn("#f59e0b", "#0f1117")}>
               Solicitar alterações
@@ -92,16 +116,54 @@ function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
         )}
       </div>
 
-      {isLoading ? (
+      {isError && (
+        <div style={{
+          padding: "0.75rem 1rem",
+          background: "#1a0808",
+          border: "1px solid #7f1d1d",
+          borderRadius: "0.5rem",
+          color: "#f87171",
+          fontSize: "0.8rem",
+        }}>
+          Erro: {errorMessage}
+        </div>
+      )}
+
+      {phantom && !isError && (
+        <div style={{
+          padding: "0.75rem 1rem",
+          background: "#1a1300",
+          border: "1px solid #78350f",
+          borderRadius: "0.5rem",
+          color: "#fbbf24",
+          fontSize: "0.8rem",
+          lineHeight: 1.5,
+        }}>
+          O stream fechou mas nenhum draft foi salvo em{" "}
+          <code>.specs/drafts/{slug}/{phase.toUpperCase()}.md</code>.{" "}
+          Provavelmente o agente esgotou as tentativas de <code>write_file</code> (MAX_RETRIES).{" "}
+          Veja <code>backend/_debug_server_err.log</code> para a última tool-call.{" "}
+          Clique em <strong>Re-gerar</strong> acima.
+        </div>
+      )}
+
+      {!isError && !phantom && (isLoading ? (
         <div style={{ padding: "3rem 0", textAlign: "center", color: "#334155", fontSize: "0.85rem" }}>
           Aguardando o agente concluir…
         </div>
       ) : preview ? (
         <MarkdownPreview content={preview} />
-      ) : null}
+      ) : null)}
 
       {showEdit && (
         <EditModeDialog onConfirm={handleEdit} onCancel={() => setShowEdit(false)} />
+      )}
+
+      {clarificationQuestions && (
+        <ClarificationDialog
+          questions={clarificationQuestions}
+          onSubmit={submitAnswers}
+        />
       )}
     </div>
   );
@@ -111,7 +173,7 @@ function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
 type Mode = "idle" | "view-draft" | "generating";
 
 export function PhaseSection({
-  phase, slug, description, files, previousPhases,
+  phase, slug, description, files,
   isApproved, isActive, isLocked, onApproved,
 }: Props) {
   const [mode, setMode] = useState<Mode>("idle");
@@ -147,27 +209,19 @@ export function PhaseSection({
       })
     );
 
-    const previous: Partial<Record<Phase, string>> = {};
-    for (const p of previousPhases) {
-      const c = await readArtifact(slug, p.toUpperCase());
-      if (c) previous[p] = c;
-    }
-
     if (currentContent && editInstructions) {
       return buildEditInput(phase, slug, currentContent, editInstructions);
     }
-    return buildInitialInput(phase, { slug, description, previous, uploads: selectedUploads });
-  }, [slug, description, files, previousPhases, phase]);
+    return buildInitialInput(phase, { slug, description, uploads: selectedUploads });
+  }, [slug, description, files, phase]);
 
   const startGenerate = useCallback(async (fromContent?: string, editInstructions?: string) => {
     if (!slug) return;
     setBuilding(true);
     try {
-      const isEdit = !!(fromContent && editInstructions);
-      if (!isEdit) {
-        // Apaga draft apenas para geração inicial (write_file falha se arquivo já existe)
-        await deleteDraft(slug, phase.toUpperCase()).catch(() => {});
-      }
+      // Não apagamos o draft anterior aqui: write_file do deepagents sobrescreve
+      // ("Updated file …" no tool_result, confirmado em log de repro). Se o agente
+      // falhar (MAX_RETRIES ou exceção), o draft anterior fica preservado.
       const input = await buildInput(fromContent, editInstructions);
       setPendingInput(input);
       setStreamKey((k) => k + 1);
@@ -175,7 +229,7 @@ export function PhaseSection({
     } finally {
       setBuilding(false);
     }
-  }, [buildInput, slug, phase]);
+  }, [buildInput, slug]);
 
   const handleApproved = useCallback((content: string) => {
     setApprovedContent(content);
@@ -253,6 +307,10 @@ export function PhaseSection({
           {building ? "Preparando…" : mode === "generating" ? "Re-gerar" : draft && mode === "idle" ? "Re-gerar" : "Gerar"}
         </button>
       </div>
+      {/* Sandbox é gerenciado automaticamente: o preflight em useArtifactAgent
+          (POST /ensure/{slug}) cria/acorda/recria conforme necessário a cada
+          Gerar. `sandboxReady` (vindo do polling de /sandboxes/{slug}) só
+          informa o TerminalPanel — não gateia mais o botão. */}
 
       {/* Aviso de draft existente */}
       {draft && mode === "idle" && (

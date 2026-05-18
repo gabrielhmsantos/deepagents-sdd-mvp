@@ -1,6 +1,6 @@
 # Champion AI — SDD Studio
 
-Geração de artefatos SDD (Software Design Documents) em pt-BR via agentes `deepagents` com UI de revisão e aprovação.
+Geração de artefatos SDD (Software Design Documents) em pt-BR via agentes `deepagents` com acesso ao repositório real do cliente via **Daytona sandbox**.
 
 ## Como funciona
 
@@ -14,6 +14,8 @@ Geração de artefatos SDD (Software Design Documents) em pt-BR via agentes `dee
 | Plano | `plano` | Arquitetura, decisões técnicas, estrutura de arquivos |
 | Tarefas | `tarefas` | Tasks atômicas com gates e Conventional Commits |
 
+Cada fase é sequencial. O agente explora o repositório clonado em `/home/daytona/repo/` e salva artefatos em `/home/daytona/specs/{slug}/` dentro do sandbox Daytona. Artefatos aprovados são snapshoteados no blob storage (filesystem local ou Azure).
+
 ## Setup
 
 ### Backend
@@ -21,16 +23,23 @@ Geração de artefatos SDD (Software Design Documents) em pt-BR via agentes `dee
 ```bash
 cd backend
 cp .env.example .env
-# editar .env com as credenciais do provedor escolhido
+# editar .env com DAYTONA_API_KEY, chave LLM e demais credenciais
 
-# Python 3.11+
-uv sync   # ou: pip install -e .
-
-langgraph dev --n-jobs-per-worker 5
-# Servidor em http://localhost:2024
+uv sync
+uv run langgraph dev --port 8000 --no-browser
+# Servidor unificado em http://localhost:8000
+# - LangGraph runtime: POST /threads, /threads/{id}/runs/stream
+# - FastAPI custom:
+#     /projects, /admin/projects   (CRUD de projetos)
+#     /ensure/{slug}, /cancel/{slug} (lifecycle de sandbox)
+#     /drafts, /approve, /artifacts  (artefatos)
+#     /github/repos                  (proxy autenticado à GitHub API)
+#     /sandboxes/{slug}              (GET status, POST exec — power-user)
+#     /settings/github-pat           (PAT global)
+#     /uploads                       (documentos base)
 ```
 
-Verificar: `curl http://localhost:2024/assistants` → deve listar 5 graphs.
+Verificar: `curl http://localhost:8000/threads -X POST -H "Content-Type: application/json" -d "{}"` → deve retornar `{"thread_id": "..."}`.
 
 ### Frontend
 
@@ -53,55 +62,101 @@ Configurável via `MODEL` no `.env`. Qualquer modelo compatível com `init_chat_
 | OpenRouter | `openrouter:minimax/minimax-m2.7` |
 | OpenRouter | `openrouter:openai/gpt-4o` |
 
-Para Anthropic, adicionar `ANTHROPIC_API_KEY` no `.env`.  
-Para OpenRouter, adicionar `OPENROUTER_API_KEY` no `.env`.
-
 ## Fluxo de uso
 
-1. Preencher o **slug do épico** e a **descrição** do produto/feature.
-2. Opcionalmente: anexar documentos base (PDF, DOCX, TXT, MD).
-3. Clicar **Gerar** — o agente processa e salva o draft em `.specs/drafts/`.
-4. Após a geração, revisar o artefato em markdown.
-5. Se necessário: **Solicitar alterações** (preserva IDs BR-XXX, FR-XXX via `edit_file`).
-6. **Aprovar** — move o draft para `.specs/features/<slug>/`.
-7. Avançar para o próximo artefato (cada fase recebe os anteriores aprovados como contexto).
+1. **(Setup uma vez)** Abrir **⚙ Configurações** no rodapé do sidebar esquerdo, ir em **Integrações**, salvar o **GitHub PAT** (escopo `repo` ou fine-grained `Contents: Read-only`).
+2. Clicar **+ Novo projeto** no sidebar — abre o form unificado.
+3. Preencher: **slug**, **SSG ID** (1-5 dígitos, cosmético), **ideia** (descrição), e selecionar **repositório** no dropdown (alimentado pelo PAT). **Branch** auto-fetched do repo (editável).
+4. Clicar **Criar projeto** — backend persiste em `projects` + cria sandbox Daytona (eager, com `git clone`). Form some, dá lugar ao **ProjectHeader** compacto.
+5. Opcionalmente: anexar **documentos base** (PDF, DOCX, TXT, MD).
+6. Clicar **Gerar** em cada `PhaseSection` (sequencial). Cada Gerar faz preflight via `POST /ensure/{slug}` (idempotente, recupera de auto-stop em estado C ou delete externo D).
+7. Agente acessa `/home/daytona/repo/` e salva o draft em `/home/daytona/specs/{slug}/{PHASE}.md`. Predecessores são lidos via `read_file` tool (sem injeção no system prompt).
+8. Revisar o artefato em markdown. Se necessário: **Solicitar alterações** (preserva IDs BR-XXX, FR-XXX via `edit_file`).
+9. **Aprovar** — move o draft do namespace `drafts/` → `features/` no blob. Avança pra próxima fase.
+10. Ao aprovar **TAREFAS**, o pipeline encerra: snapshot do repo gera `REPO_TREE`, sandbox é deletada, ZIP fica disponível.
+11. **Admin** (sidebar → Configurações → aba **Admin: Projetos**): tabela project-centric com search, filter por status, e ações por linha (**Cancelar sandbox** soft, **Deletar projeto** ríspido).
 
-## Estrutura de pastas
-
-```
-backend/
-  agents/          # 5 entrypoints + _factory.py (StateGraph com retry)
-  api.py           # FastAPI: drafts / approve / artifacts / uploads
-  uploads.py       # Extração de texto PDF / DOCX / TXT / MD
-  langgraph.json   # Registro dos 5 graphs
-  pyproject.toml
-
-frontend/
-  src/
-    components/    # PhaseSection, UploadDropzone, MarkdownPreview, etc.
-    hooks/         # useArtifactAgent (SSE streaming)
-    lib/           # api.ts, prompts.ts, types.ts
-
-prompts/           # System prompts (um por artefato, somente leitura)
-
-.specs/            # Gerado em runtime
-  drafts/          # Work-in-progress (write pelo agente)
-  features/        # Aprovados — fonte da verdade
-  uploads/         # Documentos base enviados pelo usuário
-```
+**Greenfield** (sem repositório GitHub): pular o repo picker no submit → confirma modal de warning → projeto criado sem clone. Artefatos não terão referência a código existente.
 
 ## Variáveis de ambiente
 
 | Variável | Descrição | Obrigatória |
 |---|---|---|
+| `DAYTONA_API_KEY` | Chave Daytona (obter em app.daytona.io) | Sim (modo sandbox) |
+| `DAYTONA_SERVER_URL` | URL do servidor Daytona (só self-hosted) | Não |
+| `DAYTONA_AUTO_STOP_INTERVAL_MIN` | Minutos de ociosidade antes do auto-stop (`0` = nunca) | Não (default: `5`) |
+| `DAYTONA_STATE_CACHE_TTL_SECS` | TTL do cache de estado do sandbox (evita HTTP roundtrip em /ensure repetidos) | Não (default: `60`) |
+| `GITHUB_REPOS_CACHE_TTL_SECS` | TTL do cache de `GET /api/github/repos` (reduz chamadas à GitHub API) | Não (default: `300`) |
 | `ANTHROPIC_API_KEY` | Chave Anthropic | Se `MODEL=anthropic:*` |
 | `OPENROUTER_API_KEY` | Chave OpenRouter | Se `MODEL=openrouter:*` |
-| `MODEL` | Modelo (ver tabela acima) | Não (default: `openrouter:minimax/minimax-m2.7`) |
+| `MODEL` | Modelo LLM (ver tabela acima) | Não (default: `openrouter:minimax/minimax-m2.7`) |
 | `MODEL_CONTEXT_WINDOW` | Janela de contexto em tokens | Não (default: `200000`) |
+| `AZURE_STORAGE_CONNECTION_STRING` | Conexão Azure Blob Storage; vazio → NoopBlobAdapter (filesystem local) | Não |
 | `LANGSMITH_TRACING` | Habilitar tracing LangSmith | Não |
 | `LANGSMITH_API_KEY` | Chave LangSmith | Se tracing habilitado |
-| `LANGSMITH_PROJECT` | Nome do projeto no LangSmith | Não |
 
-## Roadmap
+## Estrutura de pastas
 
-Ver [ROADMAP-SANDBOX.md](ROADMAP-SANDBOX.md) — modo brownfield com clone de repositório existente para o agente de Plano explorar o codebase real.
+```
+backend/
+  agents/          # 5 entrypoints + _factory.py (StateGraph com retry + snapshot pós-fase)
+  api.py           # FastAPI: /projects, /admin/projects, /github/repos, /ensure, /cancel, /drafts, /approve, /artifacts, /settings, /uploads
+  daytona.py       # _DaytonaManager: lifecycle (A/B/C/D) + state/hydrate cache + DaytonaBackend
+  sandboxes.py     # GET /sandboxes/{slug} (status polling) + POST /sandboxes/{slug}/exec (power-user)
+  db.py            # SQLite: projects, sandboxes (lifecycle), user_github_settings, github_project_config, global_skills, user_skills_config, users (mock single-row)
+  storage/         # Port-Adapter: NoopBlobAdapter (local) / AzureBlobAdapter (prod), namespaces drafts/+features/
+  uploads.py       # Extração de texto PDF / DOCX / TXT / MD
+  langgraph.json   # Registro dos 5 graphs + http.app
+
+frontend/
+  src/
+    components/    # PhaseSection, SandboxCard, TerminalPanel, SettingsSidebar, etc.
+    hooks/         # useArtifactAgent (SSE streaming + error handling)
+    lib/           # api.ts, prompts.ts, types.ts
+
+prompts/           # System prompts (um por artefato)
+
+.specs/            # Gerado em runtime (blob storage local)
+  features/        # Artefatos aprovados — fonte da verdade
+  drafts/          # Work-in-progress (snapshot do sandbox após cada geração)
+  uploads/         # Documentos base enviados pelo usuário
+```
+
+## Testes E2E (requer Daytona real)
+
+Os testes unitários e de integração da API rodam sem Daytona. O script abaixo verifica o lifecycle completo de sandbox contra o serviço real.
+
+### Pré-requisitos
+
+- Backend rodando (`uv run langgraph dev --port 8000 --no-browser`)
+- `DAYTONA_API_KEY` configurado no `.env`
+
+### Rodar
+
+```bash
+cd backend
+
+# Modo brownfield (com clone de repositório)
+uv run python e2e_check.py --slug meu-slug --repo-url https://github.com/org/repo
+
+# Modo greenfield (sandbox sem clone)
+uv run python e2e_check.py --slug meu-slug --no-repo
+
+# Branch específica
+uv run python e2e_check.py --slug meu-slug --repo-url https://github.com/org/repo --branch develop
+```
+
+O script verifica sequencialmente:
+
+| # | Check | O que valida |
+|---|---|---|
+| 1 | Estado A | Cria sandbox (15-30s) + retorna sandbox_id |
+| 2 | Estado B | Segunda chamada retorna em <2s, mesmo sandbox_id (idempotência) |
+| 3 | Status | `GET /sandboxes/{slug}` retorna status `started` |
+| 4 | Hidratação | Instrução para verificar `/home/daytona/specs/{slug}/` no sandbox |
+| 5 | Cancel | `POST /cancel/{slug}` + confirma deleção (opcional, interativo) |
+| 6 | Estado A pós-cancel | Recria com novo sandbox_id |
+
+**Estados C e D** requerem interação manual (descritos no output do script):
+- **C (stopped)**: aguardar `DAYTONA_AUTO_STOP_INTERVAL_MIN` minutos → chamar `/ensure` → deve dar start em ~3-5s
+- **D (delete externo)**: deletar no painel Daytona → chamar `/ensure` → deve recriar em ~15-30s

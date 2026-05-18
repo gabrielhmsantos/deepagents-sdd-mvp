@@ -1,9 +1,40 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { listArtifacts } from "./lib/api";
-import { PHASES, PHASE_LABELS } from "./lib/types";
-import type { Phase, UploadedFile } from "./lib/types";
+import { useCallback, useEffect, useState } from "react";
+import { deleteProject as deleteProjectApi, listAdminProjects, listProjectFiles, zipUrl } from "./lib/api";
+import { PHASES } from "./lib/types";
+import type { AdminProjectRow, Phase, Project, UploadedFile } from "./lib/types";
 import { PhaseSection } from "./components/PhaseSection";
+import { ProjectForm } from "./components/ProjectForm";
+import { ProjectHeader } from "./components/ProjectHeader";
+import { ProjectsSidebar } from "./components/ProjectsSidebar";
+import { SettingsView } from "./components/SettingsView";
+import { TerminalPanel } from "./components/TerminalPanel";
 import { UploadDropzone } from "./components/UploadDropzone";
+
+// Feature flags (build-time, Vite)
+const POLL_ENABLED = import.meta.env.VITE_SANDBOX_POLL_ENABLED !== "false";
+const POLL_INTERVAL_MS = Number(import.meta.env.VITE_SANDBOX_POLL_INTERVAL_MS) || 60_000;
+
+type SandboxStatus = "idle" | "restarting" | "ready";
+type ActiveView = "project" | "settings";
+
+async function fetchSandboxStatus(
+  slug: string
+): Promise<{ status: SandboxStatus; repoPath: string | null }> {
+  try {
+    const r = await fetch(`/api/sandboxes/${slug}`);
+    if (!r.ok) return { status: "idle", repoPath: null };
+    const data = (await r.json()) as {
+      exists: boolean;
+      status: string;
+      repo_path?: string | null;
+    };
+    if (!data.exists) return { status: "idle", repoPath: null };
+    const status: SandboxStatus = data.status === "restarting" ? "restarting" : "ready";
+    return { status, repoPath: data.repo_path ?? null };
+  } catch {
+    return { status: "idle", repoPath: null };
+  }
+}
 
 // ── Persistência em localStorage ────────────────────────────────────────────
 function useLocalStorage<T>(key: string, initial: T): [T, (v: T | ((p: T) => T)) => void] {
@@ -20,7 +51,11 @@ function useLocalStorage<T>(key: string, initial: T): [T, (v: T | ((p: T) => T))
     (v: T | ((p: T) => T)) => {
       setValue((prev) => {
         const next = typeof v === "function" ? (v as (p: T) => T)(prev) : v;
-        try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+        try {
+          localStorage.setItem(key, JSON.stringify(next));
+        } catch {
+          /* noop */
+        }
         return next;
       });
     },
@@ -30,170 +65,311 @@ function useLocalStorage<T>(key: string, initial: T): [T, (v: T | ((p: T) => T))
   return [value, set];
 }
 
-// ── Debounce: retorna valor estabilizado após delay ──────────────────────────
-function useDebounced<T>(value: T, delay: number): T {
-  const [debounced, setDebounced] = useState(value);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setDebounced(value), delay);
-    return () => { if (timer.current) clearTimeout(timer.current); };
-  }, [value, delay]);
-  return debounced;
-}
-
 // ── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  // Estados de input: atualizam imediatamente (digitação fluída)
-  const [slugInput, setSlugInput] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("champion-slug") ?? '""') as string; } catch { return ""; }
-  });
-  const [descriptionInput, setDescriptionInput] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("champion-description") ?? '""') as string; } catch { return ""; }
-  });
-  const [files, setFiles] = useLocalStorage<UploadedFile[]>("champion-files", []);
+  const [activeSlug, setActiveSlug] = useLocalStorage<string | null>(
+    "champion-active-slug",
+    null
+  );
+  const [activeView, setActiveView] = useState<ActiveView>("project");
+  const [adminRows, setAdminRows] = useState<AdminProjectRow[]>([]);
+  const [files, setFiles] = useState<UploadedFile[]>([]);
 
-  // Estados debouncados: propagados aos filhos e persistidos no localStorage
-  const slug = useDebounced(slugInput.toLowerCase().replace(/\s+/g, "-"), 300);
-  const description = useDebounced(descriptionInput, 400);
+  const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus>("idle");
+  const [repoPath, setRepoPath] = useState<string | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
-  // Persiste no localStorage apenas quando o valor debouncado muda
-  useEffect(() => { try { localStorage.setItem("champion-slug", JSON.stringify(slug)); } catch {} }, [slug]);
-  useEffect(() => { try { localStorage.setItem("champion-description", JSON.stringify(description)); } catch {} }, [description]);
-
-  const [approvedPhases, setApprovedPhases] = useState<Set<Phase>>(new Set());
-  const [phasesDirty, setPhasesDirty] = useState(0);
-
-  // Sincroniza fases aprovadas — só dispara quando slug debouncado muda
-  useEffect(() => {
-    if (!slug || slug.length < 3) {
-      setApprovedPhases(new Set());
-      return;
-    }
-    listArtifacts(slug)
-      .then((phases) =>
-        setApprovedPhases(new Set(phases.map((p) => p.toLowerCase() as Phase)))
-      )
-      .catch(() => setApprovedPhases(new Set()));
-  }, [slug, phasesDirty]);
-
-  const handleApproved = useCallback(() => setPhasesDirty((n) => n + 1), []);
-
+  // Derivações
+  const activeProject = adminRows.find((r) => r.slug === activeSlug) ?? null;
+  const isProjectSubmitted = activeProject !== null;
+  const sandboxReady = sandboxStatus === "ready";
+  const approvedPhases: Set<Phase> = new Set(
+    (activeProject?.approved_phases ?? []).map((p) => p.toLowerCase() as Phase)
+  );
   const activePhase = PHASES.find((p) => !approvedPhases.has(p));
   const allDone = approvedPhases.size === PHASES.length;
 
+  // ── One-shot cleanup de localStorage legacy (Step 1-2 mantinha champion-slug
+  // e champion-description; Step 3 moveu pra projects.idea + champion-active-slug).
+  // Roda uma vez no mount; sem efeito se as keys já não existirem.
+  useEffect(() => {
+    try {
+      localStorage.removeItem("champion-slug");
+      localStorage.removeItem("champion-description");
+      localStorage.removeItem("champion-files");
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  // ── Fetches ────────────────────────────────────────────────────────────────
+  const refreshProjects = useCallback(async () => {
+    try {
+      const rows = await listAdminProjects();
+      setAdminRows(rows);
+    } catch {
+      setAdminRows([]);
+    }
+  }, []);
+
+  // Carrega lista no mount.
+  useEffect(() => {
+    refreshProjects();
+  }, [refreshProjects]);
+
+  // Se o `activeSlug` salvo no localStorage não bate com nenhum projeto após
+  // carregar — limpa.
+  useEffect(() => {
+    if (activeSlug && adminRows.length > 0 && !adminRows.find((r) => r.slug === activeSlug)) {
+      setActiveSlug(null);
+    }
+  }, [activeSlug, adminRows, setActiveSlug]);
+
+  // Polling de sandbox status apenas pro activeSlug (alimenta TerminalPanel).
+  useEffect(() => {
+    if (!activeSlug) {
+      setSandboxStatus("idle");
+      setRepoPath(null);
+      return;
+    }
+    fetchSandboxStatus(activeSlug).then(({ status, repoPath: rp }) => {
+      setSandboxStatus(status);
+      setRepoPath(rp);
+    });
+  }, [activeSlug]);
+
+  useEffect(() => {
+    if (!POLL_ENABLED || !activeSlug) return;
+    const id = setInterval(() => {
+      fetchSandboxStatus(activeSlug).then(({ status, repoPath: rp }) => {
+        setSandboxStatus(status);
+        if (rp) setRepoPath(rp);
+      });
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [activeSlug]);
+
+  // Carrega arquivos do projeto ativo via SQLite-backed endpoint.
+  const refreshFiles = useCallback(async (slug: string) => {
+    try {
+      const pfiles = await listProjectFiles(slug);
+      setFiles(
+        pfiles.map((pf) => ({
+          filename: pf.filename,
+          approxTokens: pf.approx_tokens,
+          selected: true,
+          uploadSlug: slug,
+        }))
+      );
+    } catch {
+      setFiles([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeSlug) {
+      setFiles([]);
+      return;
+    }
+    refreshFiles(activeSlug);
+  }, [activeSlug, refreshFiles]);
+
+  // ── Callbacks ──────────────────────────────────────────────────────────────
+  const onSelectProject = useCallback(
+    (slug: string) => {
+      setActiveSlug(slug);
+      setActiveView("project");
+    },
+    [setActiveSlug]
+  );
+
+  const onNewProject = useCallback(() => {
+    setActiveSlug(null);
+    setActiveView("project");
+  }, [setActiveSlug]);
+
+  const onOpenSettings = useCallback(() => setActiveView("settings"), []);
+
+  const onProjectCreated = useCallback(
+    async (resp: { slug: string }) => {
+      await refreshProjects();
+      setActiveSlug(resp.slug);
+      setActiveView("project");
+      // Carrega os arquivos que foram uploaded durante a criação.
+      refreshFiles(resp.slug);
+    },
+    [refreshProjects, setActiveSlug, refreshFiles]
+  );
+
+  const onResetActiveProject = useCallback(async () => {
+    if (!activeSlug) return;
+    await deleteProjectApi(activeSlug);
+    await refreshProjects();
+    setActiveSlug(null);
+  }, [activeSlug, refreshProjects, setActiveSlug]);
+
+  const onApproved = useCallback(() => {
+    // Aprovação de uma fase muda approved_phases — refetch admin pra atualizar
+    // o 5-dots no sidebar e no header também.
+    refreshProjects();
+  }, [refreshProjects]);
+
+  // Converte AdminProjectRow → Project pro ProjectHeader (que espera Project).
+  const headerProject: Project | null = activeProject
+    ? {
+        slug: activeProject.slug,
+        ssg_id: activeProject.ssg_id,
+        idea: activeProject.idea,
+        github_repo_owner: activeProject.github_repo_owner,
+        github_repo_name: activeProject.github_repo_name,
+        github_default_branch: activeProject.github_default_branch,
+        created_at: activeProject.created_at,
+      }
+    : null;
+
   return (
-    <div style={{ minHeight: "100vh", background: "#0a0d14", color: "#e2e8f0", fontFamily: "system-ui, sans-serif" }}>
+    <div
+      style={{
+        minHeight: "100vh",
+        height: "100vh",
+        background: "#0a0d14",
+        color: "#e2e8f0",
+        fontFamily: "system-ui, sans-serif",
+        display: "flex",
+      }}
+    >
+      <ProjectsSidebar
+        entries={adminRows}
+        activeSlug={activeSlug}
+        activeView={activeView}
+        onSelectProject={onSelectProject}
+        onNewProject={onNewProject}
+        onOpenSettings={onOpenSettings}
+      />
 
-      {/* Cabeçalho */}
-      <header style={{
-        height: "48px", display: "flex", alignItems: "center",
-        padding: "0 1.5rem", gap: "0.75rem",
-        borderBottom: "1px solid #1e293b", background: "#0f1117",
-      }}>
-        <span style={{ color: "#7c3aed", fontWeight: 700, fontSize: "0.9rem" }}>Champion AI</span>
-        <span style={{ color: "#334155", fontSize: "0.8rem" }}>SDD Studio</span>
-        {slug && (
-          <>
-            <span style={{ color: "#1e293b" }}>·</span>
-            <span style={{ color: "#64748b", fontSize: "0.8rem" }}>{slug}</span>
-          </>
-        )}
-        {/* mini progresso */}
-        <div style={{ marginLeft: "auto", display: "flex", gap: "0.35rem", alignItems: "center" }}>
-          {PHASES.map((p) => (
-            <div
-              key={p}
-              title={PHASE_LABELS[p]}
-              style={{
-                width: "8px", height: "8px", borderRadius: "50%",
-                background: approvedPhases.has(p) ? "#4ade80" : p === activePhase ? "#7c3aed" : "#1e293b",
-              }}
-            />
-          ))}
-        </div>
-      </header>
-
-      {/* Formulário compartilhado */}
-      <div style={{
-        borderBottom: "1px solid #1e293b", background: "#0f1117",
-        padding: "1.25rem 1.5rem",
-      }}>
-        <div style={{ maxWidth: "960px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "1rem" }}>
-          <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start", flexWrap: "wrap" }}>
-            <div style={{ flex: "0 0 220px" }}>
-              <label style={labelStyle}>Slug do épico</label>
-              <input
-                value={slugInput}
-                onChange={(e) => setSlugInput(e.target.value)}
-                placeholder="ex: seconci-app"
-                style={inputStyle}
-              />
-            </div>
-            <div style={{ flex: 1, minWidth: "200px" }}>
-              <label style={labelStyle}>Descrição / contexto</label>
-              <textarea
-                value={descriptionInput}
-                onChange={(e) => setDescriptionInput(e.target.value)}
-                rows={3}
-                placeholder="Descreva o produto, épico ou feature a ser documentado…"
-                style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
-              />
-            </div>
-          </div>
-          <div>
-            <label style={labelStyle}>Documentos base</label>
-            <UploadDropzone slug={slug || "default"} files={files} onChange={setFiles} />
-          </div>
-        </div>
-      </div>
-
-      {/* Fases */}
-      <div style={{ maxWidth: "960px", margin: "0 auto", padding: "1.5rem" }}>
-        {!slug ? (
-          <p style={{ textAlign: "center", color: "#334155", marginTop: "4rem", fontSize: "0.9rem" }}>
-            Preencha o slug do épico para começar.
-          </p>
+      <main
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          minWidth: 0,
+          overflowY: "auto",
+        }}
+      >
+        {activeView === "settings" ? (
+          <SettingsView onProjectsChanged={refreshProjects} />
+        ) : !headerProject ? (
+          /* No active project → show ProjectForm */
+          <ProjectForm onProjectCreated={onProjectCreated} onOpenSettings={onOpenSettings} />
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-            {PHASES.map((phase, idx) => (
-              <PhaseSection
-                key={phase}
-                phase={phase}
-                slug={slug}
-                description={description}
+          /* Project view: header + uploads + phases + (optional terminal) */
+          <div
+            style={{
+              maxWidth: 960,
+              margin: "0 auto",
+              padding: "1.5rem",
+              width: "100%",
+              boxSizing: "border-box",
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+            }}
+          >
+            <ProjectHeader project={headerProject} onReset={onResetActiveProject} />
+
+            {/* Documentos base (per-project — upload + lista do backend) */}
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "0.7rem",
+                  color: "#64748b",
+                  marginBottom: "0.35rem",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                Documentos base
+              </label>
+              <UploadDropzone
+                slug={activeSlug ?? "default"}
                 files={files}
-                previousPhases={PHASES.slice(0, idx)}
-                isApproved={approvedPhases.has(phase)}
-                isActive={phase === activePhase}
-                isLocked={!approvedPhases.has(phase) && phase !== activePhase}
-                onApproved={handleApproved}
+                onChange={(newFiles) => {
+                  setFiles(newFiles);
+                  // Refresh from backend to stay in sync after upload/delete.
+                  if (activeSlug) refreshFiles(activeSlug);
+                }}
               />
-            ))}
+            </div>
+
+            {/* Terminal colapsável — power-user feature */}
+            {sandboxReady && activeSlug && (
+              <TerminalPanel
+                slug={activeSlug}
+                repoPath={repoPath}
+                isOpen={terminalOpen}
+                onToggle={() => setTerminalOpen((v) => !v)}
+              />
+            )}
+
+            {/* PhaseSection × 5
+                Key inclui slug pra remount limpa state ao trocar de projeto. */}
+            {activeSlug &&
+              PHASES.map((phase) => (
+                <PhaseSection
+                  key={`${phase}::${activeSlug}`}
+                  phase={phase}
+                  slug={activeSlug}
+                  description={activeProject?.idea ?? ""}
+                  files={files}
+                  isApproved={approvedPhases.has(phase)}
+                  isActive={phase === activePhase}
+                  isLocked={!isProjectSubmitted || (!approvedPhases.has(phase) && phase !== activePhase)}
+                  onApproved={onApproved}
+                />
+              ))}
 
             {allDone && (
-              <div style={{
-                textAlign: "center", padding: "2rem",
-                border: "1px solid #1e3a28", borderRadius: "0.75rem",
-                background: "#0d1a11", color: "#4ade80", fontSize: "0.9rem",
-              }}>
-                🎉 Pipeline completo! Artefatos em <code>.specs/features/{slug}/</code>
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "2rem",
+                  border: "1px solid #1e3a28",
+                  borderRadius: "0.75rem",
+                  background: "#0d1a11",
+                  color: "#4ade80",
+                  fontSize: "0.9rem",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "1rem",
+                  alignItems: "center",
+                }}
+              >
+                <div>
+                  🎉 Pipeline completo! Artefatos em <code>.specs/features/{activeSlug}/</code>
+                </div>
+                <a
+                  href={activeSlug ? zipUrl(activeSlug) : "#"}
+                  download
+                  style={{
+                    display: "inline-block",
+                    padding: "0.65rem 1.5rem",
+                    background: "#22c55e",
+                    color: "#052e16",
+                    fontWeight: 700,
+                    borderRadius: "0.5rem",
+                    textDecoration: "none",
+                    fontSize: "0.9rem",
+                  }}
+                >
+                  ↓ Baixar pacote ZIP (5 artefatos + manifest + repo-tree)
+                </a>
               </div>
             )}
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }
-
-const labelStyle: React.CSSProperties = {
-  display: "block", fontSize: "0.78rem", color: "#64748b",
-  marginBottom: "0.35rem", fontWeight: 500,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%", background: "#1e293b", border: "1px solid #334155",
-  borderRadius: "0.375rem", color: "#e2e8f0", padding: "0.5rem 0.625rem",
-  fontSize: "0.875rem", outline: "none", boxSizing: "border-box",
-};

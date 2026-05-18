@@ -5,6 +5,8 @@ from docx import Document
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pypdf import PdfReader
 
+from db import add_project_file, delete_project_file
+
 UPLOADS = Path(__file__).parent.parent / ".specs" / "uploads"
 ALLOWED = {".pdf", ".docx", ".txt", ".md"}
 MAX_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -45,11 +47,15 @@ async def upload_file(slug: str, file: UploadFile = File(...)):
     txt_path = folder / f"{filename}.txt"
     await asyncio.to_thread(txt_path.write_text, text, "utf-8")
 
+    approx_tokens = len(text) // 4
+    # Registra metadados no SQLite (per-project file tracking).
+    await asyncio.to_thread(add_project_file, slug, filename, approx_tokens)
+
     return {
         "filename": filename,
         "bytes": len(data),
         "extracted_chars": len(text),
-        "approx_tokens": len(text) // 4,
+        "approx_tokens": approx_tokens,
     }
 
 
@@ -58,10 +64,12 @@ def list_uploads(slug: str):
     folder = UPLOADS / slug
     if not folder.exists():
         return {"slug": slug, "files": []}
+    all_names = {p.name for p in folder.iterdir() if p.is_file()}
     files = [
-        p.name
-        for p in folder.iterdir()
-        if p.is_file() and not p.name.endswith(".txt")
+        name
+        for name in all_names
+        # Esconde apenas o texto extraído (sufixo ".txt" cujo "original" também está na pasta).
+        if not (name.endswith(".txt") and name[:-4] in all_names)
     ]
     return {"slug": slug, "files": sorted(files)}
 
@@ -89,4 +97,6 @@ def delete_upload(slug: str, filename: str):
             removed.append(p.name)
     if not removed:
         raise HTTPException(404, "arquivo não encontrado")
+    # Remove metadados do SQLite.
+    delete_project_file(slug, filename)
     return {"ok": True, "removed": removed}
