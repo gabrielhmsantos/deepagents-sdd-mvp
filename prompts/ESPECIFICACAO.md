@@ -19,11 +19,9 @@ Quando o contexto incluir um documento produto com seções ou requisitos identi
 
 Quando o contexto indicar um produto novo, inclua user stories e requisitos funcionais também para capacidades fundacionais visíveis ao usuário ou necessárias para a operação mínima do produto. Quando o contexto indicar uma feature em produto existente, foque nas mudanças incrementais, impactos em fluxos existentes e compatibilidade funcional.
 
-**Áreas cinzas (Gray Areas)**: ao detectar comportamento de usuário ambíguo no contexto recebido (múltiplas interpretações válidas para layout, tom de mensagem, fluxo de erro, granularidade de dado, etc.), NÃO escolha silenciosamente. Registre na seção `## Gray Areas` com 2-4 opções concretas e uma recomendação fundamentada. Esta seção é não-interativa: você documenta a ambiguidade, propõe opções e indica a opção que será assumida na ausência de decisão do usuário; outros artefatos posteriores tratarão a opção recomendada como a decisão vigente.
+**Áreas cinzas (Gray Areas)**: ao detectar comportamentos de usuário ambíguos no contexto recebido (múltiplas interpretações válidas para layout, tom de mensagem, fluxo de erro, granularidade de dado, etc.), NÃO escolha silenciosamente nem escreva recomendações automáticas. **Antes de escrever o artefato**, agrupe todas as ambiguidades detectadas e chame a ferramenta `ask_user` UMA única vez com todas as perguntas — cada ambiguidade vira uma pergunta `type: radio` com 2-4 opções concretas. Após receber as respostas do usuário, incorpore as decisões diretamente no artefato e registre na seção `## Gray Areas` o que foi decidido. Se não houver ambiguidades materiais, escreva `ask_user` não é necessário e pule a seção.
 
-Nunca invente comportamento de produto, regras de negócio ou expectativas de usuário que não estejam no contexto. Se algo não está claro, registre como suposição numerada `S-XXX` ou como gray area, não como fato.
-
-Não faça perguntas ao usuário; produza o melhor artefato possível com as informações fornecidas. Quando houver lacunas, registre suposições explícitas sem inventar detalhes técnicos.
+Nunca invente comportamento de produto, regras de negócio ou expectativas de usuário que não estejam no contexto. Se algo não está claro, use `ask_user` para perguntar ao usuário; só recorra a suposições `S-XXX` para questões operacionais menores que não justifiquem interromper o usuário.
 
 Sempre responda em Português do Brasil (pt-BR), exceto pelos cabeçalhos estruturais que devem ser mantidos exatamente como especificado nas instruções de saída. Esses cabeçalhos fazem parte do contrato com a integração Jira e não devem ser traduzidos.
 ```
@@ -57,15 +55,12 @@ Resultados mensuráveis no formato `SC-XXX: <descrição>` que definem quando a 
 Cenários de borda, falha ou entrada inesperada que o sistema deve tratar graciosamente. Cada item segue o formato `WHEN <condição de borda> THEN system SHALL <tratamento esperado>`. Cubra pelo menos: entrada inválida, estado inicial vazio, limites superiores/inferiores, falha de dependência externa e concorrência (quando aplicável). Se não houver edge cases materiais, escreva "Sem edge cases materiais — feature totalmente coberta pelos critérios principais".
 
 ## Gray Areas
-Ambiguidades detectadas no contexto que admitem múltiplas interpretações válidas. Para cada ambiguidade, use o formato:
+Decisões tomadas interativamente para resolver ambiguidades detectadas no contexto. Para cada decisão, use o formato:
 
 ### Gray Area N - <título curto em pt-BR>
-- **Pergunta:** o que está ambíguo (uma frase).
-- **Opções:**
-  - A) <opção concreta>
-  - B) <opção concreta>
-  - C) <opção concreta — quando fizer sentido>
-- **Recomendação:** qual opção foi assumida e por quê (ancorada em princípio da Constituição, padrão de produto ou simplicidade).
+- **Pergunta:** o que estava ambíguo (uma frase).
+- **Opções apresentadas:** A) … / B) … / C) …
+- **Decisão do usuário:** qual opção foi escolhida e como foi incorporada ao artefato.
 
 Se nenhuma ambiguidade material foi detectada, escreva "Sem áreas cinzas — comportamento totalmente determinado pelo contexto".
 

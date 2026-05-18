@@ -185,6 +185,17 @@ def init_db() -> None:
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS clarification_sessions (
+                thread_id   TEXT PRIMARY KEY,
+                questions   TEXT NOT NULL,
+                answers     TEXT,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                answered_at TEXT
+            )
+        """)
+
 
 # ══ Legacy helpers (sandboxes lifecycle) — mantidos pra Fase 1/2 ═════════════
 
@@ -353,3 +364,52 @@ def delete_project_file(slug: str, filename: str) -> bool:
             (slug, filename),
         )
         return cursor.rowcount > 0
+
+
+# ══ Clarification sessions (human-in-the-loop) ═══════════════════════════════
+
+def create_clarification(thread_id: str, questions: list[dict]) -> None:
+    import json as _json
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO clarification_sessions (thread_id, questions, answers, status)
+            VALUES (?, ?, NULL, 'pending')
+            ON CONFLICT(thread_id) DO UPDATE SET
+                questions   = excluded.questions,
+                answers     = NULL,
+                status      = 'pending',
+                answered_at = NULL,
+                created_at  = datetime('now')
+            """,
+            (thread_id, _json.dumps(questions, ensure_ascii=False)),
+        )
+
+
+def get_clarification(thread_id: str) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM clarification_sessions WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+
+
+def set_clarification_answers(thread_id: str, answers: list) -> bool:
+    import json as _json
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE clarification_sessions
+            SET answers = ?, status = 'answered', answered_at = datetime('now')
+            WHERE thread_id = ? AND status = 'pending'
+            """,
+            (_json.dumps(answers, ensure_ascii=False), thread_id),
+        )
+        return cursor.rowcount > 0
+
+
+def delete_clarification(thread_id: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM clarification_sessions WHERE thread_id = ?", (thread_id,)
+        )

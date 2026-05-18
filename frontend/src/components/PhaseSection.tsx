@@ -4,6 +4,7 @@ import { buildEditInput, buildInitialInput } from "../lib/prompts";
 import { PHASE_DESCRIPTIONS, PHASE_LABELS } from "../lib/types";
 import type { Phase, UploadedFile } from "../lib/types";
 import { useArtifactAgent } from "../hooks/useArtifactAgent";
+import { ClarificationDialog } from "./ClarificationDialog";
 import { EditModeDialog } from "./EditModeDialog";
 import { MarkdownPreview } from "./MarkdownPreview";
 
@@ -27,7 +28,8 @@ interface StreamProps {
 }
 
 function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
-  const { isLoading, isError, errorMessage, wasCanceled, submit, cancel } = useArtifactAgent(phase, slug);
+  const { isLoading, isError, errorMessage, wasCanceled, submit, cancel,
+          clarificationQuestions, submitAnswers } = useArtifactAgent(phase, slug);
   const [preview, setPreview] = useState("");
   const [done, setDone] = useState(false);
   // Phantom completion: stream fechou mas readDraft devolveu null. Significa
@@ -155,6 +157,13 @@ function PhaseStream({ phase, slug, initialInput, onApproved }: StreamProps) {
 
       {showEdit && (
         <EditModeDialog onConfirm={handleEdit} onCancel={() => setShowEdit(false)} />
+      )}
+
+      {clarificationQuestions && (
+        <ClarificationDialog
+          questions={clarificationQuestions}
+          onSubmit={submitAnswers}
+        />
       )}
     </div>
   );

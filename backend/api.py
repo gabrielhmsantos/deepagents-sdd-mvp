@@ -671,3 +671,46 @@ def read_artifact(slug: str, phase: str):
     if content is None:
         raise HTTPException(404, "artefato aprovado não encontrado")
     return {"content": content}
+
+
+# ── Clarification sessions (human-in-the-loop) ────────────────────────────────
+
+class ClarificationAnswers(BaseModel):
+    answers: list
+
+
+@app.get("/clarifications/{thread_id}")
+def get_clarification_session(thread_id: str):
+    """Polled pelo frontend a cada 10s enquanto o agente está rodando.
+    Retorna as perguntas quando o agente chama ask_user, ou status 'none'.
+    """
+    from db import get_clarification
+    row = get_clarification(thread_id)
+    if row is None or row["status"] != "pending":
+        return {"status": "none"}
+    try:
+        questions = json.loads(row["questions"])
+    except Exception:
+        return {"status": "none"}
+    return {"status": "pending", "questions": questions}
+
+
+@app.post("/clarifications/{thread_id}/answers")
+def post_clarification_answers(thread_id: str, body: ClarificationAnswers):
+    """Chamado pelo frontend quando o usuário submete respostas no ClarificationDialog."""
+    from db import get_clarification, set_clarification_answers
+    row = get_clarification(thread_id)
+    if row is None or row["status"] != "pending":
+        raise HTTPException(404, "Sem sessão de clarificação pendente para este thread.")
+    try:
+        questions = json.loads(row["questions"])
+    except Exception:
+        raise HTTPException(500, "Perguntas malformadas no banco de dados.")
+    if len(body.answers) != len(questions):
+        raise HTTPException(
+            400,
+            f"Esperado {len(questions)} respostas, recebido {len(body.answers)}.",
+        )
+    if not set_clarification_answers(thread_id, body.answers):
+        raise HTTPException(409, "Sessão já respondida ou expirada.")
+    return {"ok": True}

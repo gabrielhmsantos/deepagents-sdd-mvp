@@ -7,11 +7,18 @@ const API = "/api";
 // Não é deadline absoluto da geração, é deadline de SILÊNCIO do servidor.
 const STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
+export interface ClarificationQuestion {
+  question: string;
+  type: "radio" | "checkbox" | "text";
+  options?: string[];
+}
+
 interface AgentState {
   isLoading: boolean;
   isError: boolean;
   errorMessage: string;
   wasCanceled: boolean;
+  clarificationQuestions: ClarificationQuestion[] | null;
 }
 
 // Outcome explícito de cada submit. Permite distinguir "stream fechou
@@ -35,19 +42,58 @@ function cancelBackendRun(threadId: string | null, runId: string | null) {
 export function useArtifactAgent(phase: Phase, slug: string) {
   const [state, setState] = useState<AgentState>({
     isLoading: false, isError: false, errorMessage: "", wasCanceled: false,
+    clarificationQuestions: null,
   });
   const abortRef = useRef<AbortController | null>(null);
   // True quando o usuário clicou Cancelar. Usado no catch pra distinguir
   // abort intencional (mostra feedback + cancela no backend) de abort por
   // cleanup do StrictMode em dev (não toca em state).
   const userCanceledRef = useRef(false);
+  // thread_id como state (não só ref) para que o useEffect de polling
+  // re-execute quando o thread é criado — ref não dispara re-render.
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const threadIdRef = useRef<string | null>(null);
+  // True enquanto o ClarificationDialog está aberto — pausa o watchdog de silêncio.
+  const clarificationOpenRef = useRef(false);
 
   // Aborta qualquer run em andamento ao desmontar.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // Poll GET /clarifications/{thread_id} a cada 10s enquanto isLoading.
+  // Depende de activeThreadId (state) para re-executar quando o thread é criado,
+  // evitando a race condition onde isLoading=true mas threadId ainda era null.
+  useEffect(() => {
+    if (!state.isLoading || !activeThreadId) return;
+    const tid = activeThreadId;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/clarifications/${tid}`);
+        if (!res.ok) return;
+        const data = await res.json() as { status: string; questions?: ClarificationQuestion[] };
+        if (data.status === "pending" && data.questions) {
+          clarificationOpenRef.current = true;
+          setState((s) => ({ ...s, clarificationQuestions: data.questions! }));
+        }
+      } catch { /* network blip — ignora */ }
+    }, 10_000);
+    return () => clearInterval(interval);
+  }, [state.isLoading, activeThreadId]);
+
   const cancel = useCallback(() => {
     userCanceledRef.current = true;
     abortRef.current?.abort();
+  }, []);
+
+  const submitAnswers = useCallback(async (answers: (string | string[])[]) => {
+    const tid = threadIdRef.current;
+    if (!tid) return;
+    await fetch(`${API}/clarifications/${tid}/answers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answers }),
+    }).catch(() => {});
+    clarificationOpenRef.current = false;
+    setState((s) => ({ ...s, clarificationQuestions: null }));
   }, []);
 
   const submit = useCallback(
@@ -57,14 +103,20 @@ export function useArtifactAgent(phase: Phase, slug: string) {
       abortRef.current = abort;
       userCanceledRef.current = false;
 
-      setState({ isLoading: true, isError: false, errorMessage: "", wasCanceled: false });
+      setState({ isLoading: true, isError: false, errorMessage: "", wasCanceled: false, clarificationQuestions: null });
+      setActiveThreadId(null); // reseta para o novo run
 
       // Watchdog: aborta se o stream ficar silencioso por muito tempo.
+      // Quando o ClarificationDialog está aberto, re-arm em vez de disparar.
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let idleTripped = false;
       const armWatchdog = () => {
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
+          if (clarificationOpenRef.current) {
+            armWatchdog(); // dialog aberto: prorroga o watchdog
+            return;
+          }
           idleTripped = true;
           abort.abort();
         }, STREAM_IDLE_TIMEOUT_MS);
@@ -100,6 +152,8 @@ export function useArtifactAgent(phase: Phase, slug: string) {
         }
         const threadData = await threadResp.json() as { thread_id?: string };
         threadId = threadData.thread_id ?? null;
+        threadIdRef.current = threadId;
+        setActiveThreadId(threadId); // dispara re-execução do useEffect de polling
         if (!threadId) {
           throw new Error("Resposta de /threads sem thread_id.");
         }
@@ -211,7 +265,9 @@ export function useArtifactAgent(phase: Phase, slug: string) {
     isError: state.isError,
     errorMessage: state.errorMessage,
     wasCanceled: state.wasCanceled,
+    clarificationQuestions: state.clarificationQuestions,
     submit,
     cancel,
+    submitAnswers,
   };
 }

@@ -9,6 +9,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.types import RunnableConfig
 from deepagents import create_deep_agent
+from agents.tools.ask_user import ask_user as _ask_user_tool
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,28 @@ _RETRY_MESSAGE = (
     "para salvar no caminho exato indicado em [SALVAR EM]. "
     "Não responda com texto — salve o arquivo diretamente."
 )
+
+_CLARIFICATION_INSTRUCTION = """
+
+---
+
+## FERRAMENTA DE ESCLARECIMENTO
+
+Quando estiver prestes a escrever um placeholder como `[A definir - ...]`,
+`[indefinido]`, `[escolher tecnologia]` ou qualquer marcação de incerteza,
+PARE e use a ferramenta `ask_user` para perguntar ao usuário antes de continuar.
+
+Regras:
+- Agrupe TODAS as perguntas pendentes em UMA única chamada (não chame múltiplas vezes).
+- Após receber as respostas, incorpore-as no artefato naturalmente, sem mencionar a interação.
+- Só escreva placeholders se `ask_user` retornar TIMEOUT ou ERROR.
+
+Exemplo de chamada:
+[
+  {"question": "Qual broker de mensageria será utilizado?", "type": "radio", "options": ["RabbitMQ", "Kafka", "SQS"]},
+  {"question": "Qual runtime de execução?", "type": "text"}
+]
+"""
 
 # Número total de invocações do agente (1ª tentativa + retries). Combinado com
 # backoff de rate-limit em run_agent. Default 3 dá espaço pro provider recuperar
@@ -223,10 +246,12 @@ def make_agent(prompt_filename: str):
         if slug:
             system_prompt += _predecessors_block(phase, slug)
         system_prompt += _SAVE_INSTRUCTION
+        system_prompt += _CLARIFICATION_INSTRUCTION
 
         _model = _LLM_PROVIDER.build_chat_model(max_output_tokens=MAX_OUTPUT_TOKENS)
         deep_agent = create_deep_agent(
             model=_model,
+            tools=[_ask_user_tool],
             system_prompt=system_prompt,
             backend=backend,
             skills=["backend/skills"],
@@ -234,7 +259,7 @@ def make_agent(prompt_filename: str):
         logger.info("[%s] invoking deep_agent (system_prompt=%d chars)",
                     phase, len(system_prompt))
         try:
-            result = deep_agent.invoke({"messages": state["messages"]})
+            result = deep_agent.invoke({"messages": state["messages"]}, config)
         except Exception as exc:
             logger.exception("[%s] deep_agent.invoke RAISED: %s", phase, exc)
             error_summary = f"{type(exc).__name__}: {str(exc)[:400]}"
