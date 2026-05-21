@@ -84,6 +84,7 @@ Configurável via `MODEL` no `.env`. Qualquer modelo compatível com `init_chat_
 |---|---|---|
 | `DAYTONA_API_KEY` | Chave Daytona (obter em app.daytona.io) | Sim (modo sandbox) |
 | `DAYTONA_SERVER_URL` | URL do servidor Daytona (só self-hosted) | Não |
+| `DAYTONA_SNAPSHOT` | Snapshot Daytona pré-publicado com gh/node/git (ver seção *Imagem do sandbox Daytona*) | Sim |
 | `DAYTONA_AUTO_STOP_INTERVAL_MIN` | Minutos de ociosidade antes do auto-stop (`0` = nunca) | Não (default: `5`) |
 | `DAYTONA_STATE_CACHE_TTL_SECS` | TTL do cache de estado do sandbox (evita HTTP roundtrip em /ensure repetidos) | Não (default: `60`) |
 | `GITHUB_REPOS_CACHE_TTL_SECS` | TTL do cache de `GET /api/github/repos` (reduz chamadas à GitHub API) | Não (default: `300`) |
@@ -94,6 +95,52 @@ Configurável via `MODEL` no `.env`. Qualquer modelo compatível com `init_chat_
 | `AZURE_STORAGE_CONNECTION_STRING` | Conexão Azure Blob Storage; vazio → NoopBlobAdapter (filesystem local) | Não |
 | `LANGSMITH_TRACING` | Habilitar tracing LangSmith | Não |
 | `LANGSMITH_API_KEY` | Chave LangSmith | Se tracing habilitado |
+
+## Imagem do sandbox Daytona
+
+O agente roda em um sandbox Daytona que vem com `gh`, `git`, `node`, `jq` e `ripgrep` pré-instalados — receita em [`backend/Dockerfile.daytona.sandbox`](./backend/Dockerfile.daytona.sandbox). Pré-instalar elimina cold-start de `apt-get install` a cada `/ensure`.
+
+### Testar localmente
+
+Antes de publicar no Daytona, valide a imagem na sua máquina:
+
+```bash
+cd backend
+docker build -t sdd-image:1 -f Dockerfile.daytona.sandbox .
+docker run --rm -it sdd-image:1 bash -lc "gh --version && node --version && git --version"
+```
+
+Espere ver as três versões impressas sem erro. Se quiser inspecionar o container:
+
+```bash
+docker run --rm -it sdd-image:1 bash
+```
+
+### Publicar no Daytona
+
+Duas opções — escolha uma.
+
+**Opção 1: script Python** (recomendado, não exige CLI Daytona instalada).
+Roda da raiz do repo, usa `DAYTONA_API_KEY` do ambiente ou de `backend/.env`:
+
+```bash
+uv run backend/scripts/publish_snapshot.py
+```
+
+O script faz `Image.from_dockerfile(...)` apontando pra `backend/Dockerfile.daytona.sandbox` e publica como `sdd-image:1`, mostrando logs do build em tempo real.
+
+**Opção 2: CLI Daytona.** Instalação em https://www.daytona.io/docs/ (Windows: `winget install Daytona.Daytona`). Depois `daytona login` (ou exporte `DAYTONA_API_KEY`):
+
+```bash
+cd backend
+daytona snapshot create sdd-image:1 --dockerfile Dockerfile.daytona.sandbox --context .
+```
+
+Após publicar (qualquer das opções), configure `DAYTONA_SNAPSHOT=sdd-image:1` no `backend/.env`. Sem essa variável o backend levanta `ValueError` no primeiro `/ensure`.
+
+### Versionamento
+
+Use tags incrementais (`sdd-image:1`, `sdd-image:2`, …) — nunca `:latest`. Quando alterar o Dockerfile, faça build com a próxima tag, publique, e só então atualize `.env`. Assim, rollback é trocar uma string.
 
 ## Estrutura de pastas
 

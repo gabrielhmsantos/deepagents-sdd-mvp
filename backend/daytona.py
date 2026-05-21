@@ -42,6 +42,11 @@ except Exception as _exc:
 
 DAYTONA_API_KEY = os.environ.get("DAYTONA_API_KEY", "")
 DAYTONA_SERVER_URL = os.environ.get("DAYTONA_SERVER_URL", "")
+# Snapshot Daytona pré-publicado (ver Dockerfile.daytona.sandbox) que define a
+# imagem base de todo sandbox criado por este backend. Obrigatório — ausência
+# levanta ValueError no primeiro create(). Pré-instala gh/node/git/jq/ripgrep
+# pra eliminar cold-start de `apt-get install` no agente.
+DAYTONA_SNAPSHOT = os.environ.get("DAYTONA_SNAPSHOT", "").strip()
 # Default upper bound for sandbox.process.exec — sem isso, uma chamada presa
 # na API do Daytona trava o worker para sempre. Override via env.
 DAYTONA_EXEC_TIMEOUT_SECS = int(os.environ.get("DAYTONA_EXEC_TIMEOUT_SECS", "30"))
@@ -284,18 +289,30 @@ class _DaytonaManager:
         if owner and repo:
             repo_url = f"https://github.com/{owner}/{repo}"
 
+        if not DAYTONA_SNAPSHOT:
+            raise ValueError(
+                "DAYTONA_SNAPSHOT não configurado. Publique a imagem com "
+                "`daytona snapshot create sdd-image:N --dockerfile Dockerfile.daytona.sandbox --context .` "
+                "e adicione DAYTONA_SNAPSHOT=sdd-image:N ao backend/.env."
+            )
+
         try:
             client = _make_client()
         except Exception as exc:
             logger.error("Falha ao inicializar cliente Daytona: %s", exc)
             raise RuntimeError(f"Não foi possível conectar ao Daytona: {exc}")
 
+        from daytona_sdk import CreateSandboxFromSnapshotParams
+
         try:
-            sandbox = client.create()
+            sandbox = client.create(CreateSandboxFromSnapshotParams(snapshot=DAYTONA_SNAPSHOT))
         except Exception as exc:
             logger.error("Falha ao criar sandbox: %s", exc)
             raise RuntimeError(f"Erro ao criar sandbox Daytona: {exc}")
-        logger.info("Daytona sandbox criado: id=%s slug=%s", sandbox.id, slug)
+        logger.info(
+            "Daytona sandbox criado: id=%s slug=%s snapshot=%s",
+            sandbox.id, slug, DAYTONA_SNAPSHOT,
+        )
 
         # Ajusta auto-stop pra valor da env (default 5min em dev, 45min em prod).
         # Sandbox parado vira estado C, recuperável via client.start() em ensure_sandbox.

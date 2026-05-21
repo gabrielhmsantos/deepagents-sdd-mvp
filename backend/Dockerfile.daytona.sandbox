@@ -1,0 +1,66 @@
+# Imagem base do sandbox Daytona usado pelo agente SDD.
+# Build:   docker build -t sdd-image:1 -f Dockerfile.daytona.sandbox .
+# Publish: daytona snapshot create sdd-image:1 --dockerfile Dockerfile.daytona.sandbox --context .
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# Pacotes base + utilitários que o agente usa em ls/grep/glob/exec.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      wget \
+      gnupg \
+      git \
+      jq \
+      ripgrep \
+      unzip \
+      sudo \
+      locales \
+      openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+
+# Certificado raiz atualizado (apt-installa ca-certificates acima, mas garante
+# que o store está fresco caso a imagem base tenha cache antigo).
+RUN update-ca-certificates
+
+# Confiança no host github.com (SSH known_hosts) — evita o prompt
+# "Are you sure you want to continue connecting (yes/no)?" em git clone via SSH.
+RUN mkdir -p /etc/ssh \
+ && ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /etc/ssh/ssh_known_hosts
+
+# Keyring oficial do GitHub CLI (gh) — chave GPG do repo apt.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && chmod 644 /usr/share/keyrings/githubcli-archive-keyring.gpg
+
+# Adiciona o repositório apt do gh, referenciando o keyring acima.
+RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list
+
+# Instala o gh propriamente dito (depende dos dois passos acima).
+RUN apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/* \
+ && gh --version
+
+# Node.js 20 LTS via NodeSource. Script oficial configura o repo apt.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version \
+ && npm --version
+
+# Usuário não-root esperado pelo restante do sistema (DAYTONA_REPO_PATH=/home/daytona/repo).
+RUN useradd -m -s /bin/bash daytona \
+ && echo "daytona ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/daytona \
+ && chmod 0440 /etc/sudoers.d/daytona
+
+USER daytona
+WORKDIR /home/daytona
+
+# Config git mínima — evita warnings em git clone/commit dentro do sandbox.
+RUN git config --global init.defaultBranch main \
+ && git config --global advice.detachedHead false
